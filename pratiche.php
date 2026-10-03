@@ -38,7 +38,7 @@ require_once 'header.php';
     <?php echo flash_html(); ?>
     <?php if ($p):
         $risposte = json_decode((string)$p['risposte_json'], true) ?: [];
-        $eventi = $conn->query("SELECT * FROM pratiche_eventi WHERE pratica_id = " . (int)$p['id'] . " AND interno = 0 ORDER BY creato_il, id")->fetch_all(MYSQLI_ASSOC);
+        $eventi = db_righe($conn, "SELECT * FROM pratiche_eventi WHERE pratica_id = ? AND interno = 0 ORDER BY creato_il, id", [(int)$p['id']]);
         $m_p = modulo_didattica($conn, (int)$p['modulo_id']);
         $richiesta = $p['stato'] === 'integrazione' ? (json_decode((string)($p['richiesta_json'] ?? ''), true) ?: ['tipo' => 'documenti', 'testo' => '']) : null;
         $etichette_ev = ['passaggio' => 'Passaggio', 'attivita' => 'Attività', 'autodich' => 'Autodichiarazione']; ?>
@@ -98,7 +98,7 @@ require_once 'header.php';
             </div></div></div>
         </div>
     <?php else:
-        $mie = $conn->query("SELECT p.*, m.titolo AS modulo_titolo FROM pratiche p JOIN didattica_moduli m ON m.id = p.modulo_id WHERE p.utente_id = $uid ORDER BY p.aggiornata_il DESC")->fetch_all(MYSQLI_ASSOC); ?>
+        $mie = db_righe($conn, "SELECT p.*, m.titolo AS modulo_titolo FROM pratiche p JOIN didattica_moduli m ON m.id = p.modulo_id WHERE p.utente_id = ? ORDER BY p.aggiornata_il DESC", [(int)$uid]); ?>
         <h1 class="fw-bold h2 mb-1">Le mie pratiche</h1>
         <p class="text-secondary">Le richieste inviate con i moduli online. Per una nuova richiesta vai alla <a href="modulistica.php">Modulistica</a>.</p>
         <?php if (!$mie): ?><div class="alert alert-light border">Non hai ancora inviato richieste.</div><?php endif; ?>

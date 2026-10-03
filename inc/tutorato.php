@@ -34,8 +34,7 @@ if (!defined('METODI_ACCESSO')) define('METODI_ACCESSO', ['spid' => 'SPID', 'cie
 
 if (!function_exists('bando_tutorato')) {
     function bando_tutorato($conn, int $id): ?array {
-        $r = @$conn->query("SELECT * FROM tutorato_bandi WHERE id = $id");
-        return $r ? ($r->fetch_assoc() ?: null) : null;
+        return db_riga($conn, "SELECT * FROM tutorato_bandi WHERE id = ?", [$id]);
     }
     function bandi_tutorato($conn): array {
         $r = @$conn->query("SELECT b.*, (SELECT COUNT(*) FROM tutorato_incarichi i WHERE i.bando_id = b.id AND i.stato <> 'annullata') AS n_incarichi,
@@ -52,10 +51,8 @@ if (!function_exists('bando_tutorato')) {
     }
     // Lettera dal link personale (studente, docente o direttore)
     function incarico_per_token($conn, string $ruolo, string $token): ?array {
-        if (!preg_match('/^[a-f0-9]{40}$/', $token) || !in_array($ruolo, ['studente', 'docente', 'direttore'], true)) return null;
-        $st = $conn->prepare("SELECT id FROM tutorato_incarichi WHERE token_$ruolo = ? LIMIT 1");
-        $st->bind_param("s", $token); $st->execute();
-        $id = (int)($st->get_result()->fetch_assoc()['id'] ?? 0);
+        if (!preg_match('/^[a-f0-9]{40}$/', $token) || !in_array($ruolo, ['studente', 'docente', 'direttore', 'fine'], true)) return null;
+        $id = (int)db_valore($conn, "SELECT id FROM tutorato_incarichi WHERE token_$ruolo = ? LIMIT 1", [$token]);
         return $id ? incarico_tutorato($conn, $id) : null;
     }
 }
@@ -66,7 +63,7 @@ if (!function_exists('evento_incarico')) {
         $ip = mb_substr((string)($_SERVER['REMOTE_ADDR'] ?? ''), 0, 45);
         $st = $conn->prepare("INSERT INTO tutorato_eventi (incarico_id, tipo, testo, autore, ip) VALUES (?, ?, ?, ?, ?)");
         $st->bind_param("issss", $id, $tipo, $testo, $autore, $ip); $st->execute();
-        $conn->query("UPDATE tutorato_incarichi SET aggiornata_il = NOW() WHERE id = $id");
+        db_esegui($conn, "UPDATE tutorato_incarichi SET aggiornata_il = NOW() WHERE id = ?", [$id]);
     }
 }
 
@@ -473,7 +470,7 @@ if (!function_exists('registra_firma_incarico')) {
         $chi = $ruolo === 'docente' ? 'Prof. ' . trim($i['docente_nome'] . ' ' . $i['docente_cognome']) : 'Prof. ' . $i['direttore_nome'];
         if ($ruolo === 'docente') {
             $tok = bin2hex(random_bytes(20));
-            $st = $conn->prepare("UPDATE tutorato_incarichi SET stato = 'firmata_docente', firmata_docente_il = NOW(), token_direttore = ? WHERE id = ?");
+            $st = $conn->prepare("UPDATE tutorato_incarichi SET stato = 'firmata_docente', firmata_docente_il = NOW(), token_direttore = ?, solleciti = 0, sollecito_il = NULL WHERE id = ?");
             $st->bind_param("si", $tok, $id); $st->execute();
             evento_incarico($conn, $id, 'firma_docente', "Firmata in PAdES dal docente ($come)", $chi);
             email_incarico($conn, $i['direttore_email'], "Lettera di incarico di tutorato da firmare: " . trim($i['cognome'] . ' ' . $i['nome']),
@@ -481,8 +478,12 @@ if (!function_exists('registra_firma_incarico')) {
                 . "<p>La firmi digitalmente <strong>in formato PAdES</strong> (firma remota Aruba dal portale o caricando il PDF firmato): poi la lettera va all'Ufficio per il protocollo.</p>",
                 url_base_sito() . '/firma_incarico.php?t=' . $tok, 'Apri e firma la lettera');
         } else {
-            $conn->query("UPDATE tutorato_incarichi SET stato = 'firmata', firmata_direttore_il = NOW() WHERE id = $id");
+            db_esegui($conn, "UPDATE tutorato_incarichi SET stato = 'firmata', firmata_direttore_il = NOW(), solleciti = 0, sollecito_il = NULL WHERE id = ?", [$id]);
             evento_incarico($conn, $id, 'firma_direttore', "Firmata in PAdES dal direttore ($come)", $chi);
+            // L'incarico è perfezionato: il tutor può segnare le ore nel registro delle attività
+            email_incarico($conn, $i['email'], "Tutorato: lettera di incarico firmata, registro delle attività aperto",
+                "<p>Gentile " . $h($i['nome'] . ' ' . $i['cognome']) . ",</p><p>la tua lettera di incarico è firmata dal docente responsabile e dal Direttore. Da ora segna nel <strong>registro delle attività</strong> i giorni, le ore e le attività svolte: il docente le approva e a fine incarico dichiari concluse le attività.</p>",
+                url_base_sito() . '/registro_tutorato.php?id=' . $id, 'Apri il registro');
             foreach (email_operatori_incarico($conn, $i) as $e)
                 email_incarico($conn, $e, "Lettera di incarico firmata: da protocollare – " . trim($i['cognome'] . ' ' . $i['nome']),
                     "<p>La lettera di incarico <strong>" . $h($i['codice']) . "</strong> di " . $h(trim($i['nome'] . ' ' . $i['cognome'])) . " (" . $h($i['bando_titolo']) . ") ha tutte le firme: accettazione dello studente con identità digitale, firma PAdES del responsabile dell'attività e del Direttore.</p>"
@@ -519,7 +520,7 @@ if (!function_exists('annulla_incarico')) {
     function annulla_incarico($conn, int $id, string $motivo, string $autore = ''): ?string {
         $i = incarico_tutorato($conn, $id);
         if (!$i || in_array($i['stato'], ['protocollata', 'annullata'], true)) return "La lettera non si può annullare.";
-        $conn->query("UPDATE tutorato_incarichi SET stato = 'annullata', token_studente = NULL, token_docente = NULL, token_direttore = NULL WHERE id = $id");
+        db_esegui($conn, "UPDATE tutorato_incarichi SET stato = 'annullata', token_studente = NULL, token_docente = NULL, token_direttore = NULL, token_fine = NULL WHERE id = ?", [$id]);
         evento_incarico($conn, $id, 'annullata', 'Annullata' . (trim($motivo) !== '' ? ': ' . mb_substr(trim($motivo), 0, 500) : ''), $autore);
         return null;
     }

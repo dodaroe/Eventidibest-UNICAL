@@ -38,5 +38,6 @@ def riga(blocchi,larg):
     t.setStyle(TableStyle(s)); return t
 el.append(riga(b[0:3],[0.22,0.2,0.58])); el.append(Spacer(1,8))
 el.append(riga(b[3:6],[0.2,0.22,0.58])); el.append(Spacer(1,6))
+if len(b)>6: el.append(riga(b[6:8],[0.5,0.5])); el.append(Spacer(1,6))
 el.append(Paragraph(pulisci(re.search(r'<div class="leg">(.*?)</div>',body,re.S).group(1)),ParagraphStyle('l',parent=st,fontSize=7.5,textColor=colors.HexColor('#64748b'))))
 doc.build(el)

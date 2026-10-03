@@ -27,6 +27,11 @@ Ogni area ha un **tipo** (`pagine_eventi.tipo_area`: fsl, eventi, gruppi, calend
 - **Catalogo degli insegnamenti di Ateneo**: i corsi di studio di tutti i dipartimenti si aggiornano con l'anagrafe; lo studente sceglie **tipo di corso → corso di studio → anno accademico di offerta → insegnamento** (scaricato dalle API la prima volta e tenuto 30 giorni), CFU e S.S.D. si compilano da soli, oppure lo scrive a mano (`cerca_insegnamenti.php`, `assets/js/campi-pratica.js`)
 - **Didattica – Iter**: chi ha avuto in carico la pratica nei passi precedenti continua a vederla (filtro «Passate ad altri uffici») e la integra; chi l'ha in carico può chiedergli un'integrazione; lo studente può sempre aggiungere documenti. Le email partono **solo ai passaggi**: all'operatore che riceve la pratica e allo studente («passata a…»), per le richieste di integrazione e per gli esiti; niente email per note interne e cambi di stato intermedi
 - **Tutorato – Lettere di incarico** (`admin/tutorato.php`): bando con decreto del bando e della commissione e direttore dall'anagrafe; per ogni vincitore dati anagrafici, attività, ore, periodo, compenso e docente responsabile (dall'anagrafe o a mano). Word precompilato dal modello del Dipartimento e PDF della lettera. Iter: email allo studente → **conferma con SPID o CIE** (`incarico.php`: solo il titolare del codice fiscale; nel PDF metodo, livello, identity provider, spidCode, data e ora, impronta SHA-256) → **firma PAdES del docente** → **firma PAdES del direttore** (`firma_incarico.php`: firma remota Aruba dal portale oppure caricamento del PDF firmato) → email all'operatore che scarica il PDF con tutte le firme e registra il protocollo (copia allo studente). Accettati solo PDF PAdES che contengono la lettera senza modifiche, con la firma integra e, se noto, il codice fiscale del firmatario; i .p7m (CAdES) sono rifiutati
+- **Tutorato – Registro delle attività e fine attività** (`registro_tutorato.php`, dall'Area personale): dopo la firma del direttore il tutor segna giorno, ore (a mezz'ore, entro le ore dell'incarico) e attività; il docente responsabile approva o respinge. Quando il tutor dichiara concluse le attività il docente conferma e il portale compila da solo la **dichiarazione di fine attività** (modello del Dipartimento: titolo, insegnamento e corso del docente inseriti dall'operatore, decreto del bando, ore approvate, riepilogo del registro), da firmare in PAdES (`firma_incarico.php`, firma remota Aruba o scarica-firma-ricarica). Poi l'operatore riceve l'avviso **«attività completate»** con il riepilogo delle ore e il PDF, e registra il protocollo. Anteprima della dichiarazione dal pannello
+- **Promemoria e solleciti** (cron): al tutor per aggiornare il registro (dopo 2 settimane senza attività) e, dalla settimana prima della fine del periodo, per chiuderlo (al massimo uno a settimana); al docente per le ore da approvare; **solleciti delle firme ferme** (docente e direttore sulla lettera, docente sulla fine attività, segretario e coordinatore sul verbale) ogni `FIRME_GIORNI_SOLLECITO` giorni (predefinito 5), al massimo 3, poi avviso all'operatore
+- **Sedute – Convocazione per email (facoltativa)**: l'operatore o il referente decide se inviarla e ne personalizza oggetto e testo (segnaposti `{NOME}`, `{ORGANO}`, `{DATA}`, `{ORA}`, `{LUOGO}`, `{ODG}`, `{COORDINATORE}`, `{LINK_GIUSTIFICA}`); con il link personale (`giustifica.php`) il componente giustifica l'assenza e risulta «assente giustificato» nelle presenze, con il motivo
+- **Sedute – Estratto del verbale per lo studente**: con «Applica gli esiti» ogni pratica approvata o respinta riceve un PDF con la delibera e il quadro delle convalide / del piano di studi, visibile allo studente nella pratica
+- **Sedute – Verbale firmato in PAdES**: si carica il verbale in PDF e lo firmano il segretario e poi il coordinatore (`firma_verbale.php`: firma remota Aruba se configurata, altrimenti scarica, firma e ricarica); a firme complete il PDF va ai referenti. **Importa i componenti** da un altro consiglio; pagine dei consigli e delle sedute ridisegnate (schede dei consigli, sedute prossime e passate, passi della seduta)
 - **Solo PAdES** anche per le convenzioni FSL: istruzioni alla scuola e registro accettano solo PDF firmati in PAdES
 - **Gestione eventi multi-area** con sezioni (Pagine) personalizzabili per colori, layout e accessi
 - **8 layout di pagina**: griglia per sezioni, lista cronologica, elenco avanzato con ricerca, calendario, timeline, agenda a schede per giorno, gruppi/corsi, progetti — tutti gestiscono anche i turni senza data fissa
@@ -166,7 +171,7 @@ Gli script `cron_background.php`, `cron_attestati.php`, `admin/cron_reminders.ph
 
 Su Windows con XAMPP, da Git Bash: `bash strumenti/locale/avvia.sh` avvia MariaDB e il portale su `http://127.0.0.1:8080/eventi/` con un database separato (`eventi_locale`) e dati di esempio inventati (`--nuovo` li ricrea, `--ferma` spegne tutto). Usa il file `.env.locale` (creato da solo, mai da caricare sul server): nessuna email parte, si leggono in `/__email`; l'accesso SSO è sostituito da `/__accesso`; il cron si lancia da `/__cron`. Le poche righe del codice che lo permettono si attivano solo con il server integrato di PHP (`PHP_SAPI === 'cli-server'`), mai con Apache.
 
-Prima di ogni caricamento: `/c/xampp/php/php.exe -d extension=zip strumenti/prove/esegui.php` lancia le prove automatiche (funzioni su un database usa e getta e, se l'ambiente locale è acceso, pagine, file riservati, pannello e un'iscrizione completa). Esce con codice 1 se una prova fallisce. Dopo il caricamento, sul server: `PHP_BIN=/opt/lampp/bin/php bash strumenti/verifica_sito.sh`.
+Prima di ogni caricamento: `/c/xampp/php/php.exe -d extension=zip strumenti/prove/esegui.php` lancia le prove automatiche (funzioni su un database usa e getta e, se l'ambiente locale è acceso, pagine, file riservati, pannello e un'iscrizione completa). Esce con codice 1 se una prova fallisce. Dopo il caricamento, sul server: `PHP_BIN=/opt/lampp/bin/php bash strumenti/verifica_sito.sh` (controlli dall'esterno) e `PHP_BIN=/opt/lampp/bin/php MYSQL_BIN=/opt/lampp/bin/mysql PROVE_DB_USER=… PROVE_DB_PASS=… bash strumenti/prove_server.sh` (estensioni PHP, sintassi, cartelle scrivibili e protette, prove delle funzioni su un database usa e getta `eventi_prova`: serve un utente MySQL che possa crearlo; il database del portale non viene toccato e i file delle prove vanno in `cache/prove/`). `PROVE_SALTA_DB=1` salta le prove sul database.
 
 ### Indirizzo del portale (/didattica)
 
@@ -174,7 +179,9 @@ Il codice non dipende dal nome della cartella. Per passare da `/eventi` a `/dida
 
 ### Tutorato: firma remota Aruba e SPID/CIE
 
-Nel `.env`: `INCARICHI_SOLO_SPID_CIE=1` (lo studente conferma solo se è entrato con SPID o CIE; il metodo si legge dagli attributi e dal contesto di autenticazione SAML in `metadati_accesso_saml()`), `ARUBA_ARSS_URL`, `ARUBA_ARSS_DOMINIO` e `ARUBA_ARSS_CERTID` per la firma remota Aruba (ArubaSignService, `pdfsignatureV2` con profilo PADESBES). Senza `ARUBA_ARSS_URL` docente e direttore scaricano il PDF, lo firmano in PAdES e lo caricano. I PDF stanno in `uploads/incarichi/` (bloccata al web); il modello Word è `modelli_documenti/lettera_incarico_tutorato.docx`.
+Nel `.env`: `FIRME_GIORNI_SOLLECITO=5` (solleciti delle firme ferme), `INCARICHI_SOLO_SPID_CIE=1` (lo studente conferma solo se è entrato con SPID o CIE; il metodo si legge dagli attributi e dal contesto di autenticazione SAML in `metadati_accesso_saml()`), `ARUBA_ARSS_URL`, `ARUBA_ARSS_DOMINIO` e `ARUBA_ARSS_CERTID` per la firma remota Aruba (ArubaSignService, `pdfsignatureV2` con profilo PADESBES). Senza `ARUBA_ARSS_URL` docente e direttore scaricano il PDF, lo firmano in PAdES e lo caricano. I PDF stanno in `uploads/incarichi/` e i verbali firmati in `uploads/verbali/` (bloccate al web); il modello Word è `modelli_documenti/lettera_incarico_tutorato.docx`.
+
+Conservazione (da concordare con il DPO, descritta in `privacy.php`): `CONSERVAZIONE_INCARICHI_MESI` (0 = mai) cancella dati personali, PDF e registro delle lettere protocollate o annullate da più di N mesi (restano nome, ore, compenso e protocolli); `CONSERVAZIONE_CONVOCAZIONI_MESI` (predefinito 12) cancella link, email e motivi delle assenze delle convocazioni.
 
 ### Anagrafe degli insegnamenti
 
@@ -212,8 +219,13 @@ eventidibest-cms/
 │   ├── nuova_area.php          # Creazione di un'area (nasce nascosta, voce di menu nascosta)
 │   ├── risorse.php             # Calendari e risorse: risorse, orari settimanali e chiusure
 │   ├── prenotazioni_risorse.php # Calendari e risorse: agenda, prenotazioni, approvazioni, CSV (dashboard dell'area)
-│   ├── didattica.php           # Didattica: pratiche, sedute e consigli (presenze, convalide, verbale), moduli, ufficio, statistiche
-│   ├── tutorato.php            # Tutorato: bandi e lettere di incarico (iter SPID/CIE → PAdES docente → PAdES direttore → protocollo)
+│   ├── didattica.php           # Didattica: prepara i dati comuni e include la scheda (stessi indirizzi ?tab=…)
+│   ├── didattica_pratiche.php  #   scheda Pratiche (azioni e pagina)
+│   ├── didattica_sedute.php    #   scheda Sedute e verbali: consigli, convocazione, presenze, decisioni, estratti, verbale PAdES
+│   ├── didattica_moduli.php    #   scheda Moduli e documenti (costruttore dei moduli online)
+│   ├── didattica_ufficio.php   #   scheda Ufficio e ricevimento
+│   ├── didattica_statistiche.php # scheda Statistiche
+│   ├── tutorato.php            # Tutorato: bandi e lettere di incarico (iter SPID/CIE → PAdES docente → PAdES direttore → protocollo), registro e fine attività
 │   ├── utenti.php              # Utenti, gruppi e abilitazioni, con riepilogo per area
 │   ├── scuole.php              # Anagrafe scuole: caricamento del file del Ministero e abbinamento dello storico, scuole collegate con i docenti (le convenzioni sono in fsl.php)
 │   ├── convenzione_file.php    # Scarica la convenzione o l'Allegato A firmati (solo amministratori; i file sono bloccati al web)
@@ -242,9 +254,9 @@ eventidibest-cms/
 ├── assets/             # Icone PWA
 ├── config.php          # Connessione DB, session, security headers, CSP
 ├── functions.php       # Carica le funzioni condivise da inc/ (nell'ordine giusto)
-├── inc/                # Funzioni per argomento: base, sezioni, aspetto, liste_attesa, sistema, dati, eventi_progetti, anagrafi, fsl, prenotazioni, attestati, risorse, schema (bloccata al web)
+├── inc/                # Funzioni per argomento: base, sezioni, aspetto, liste_attesa, sistema, dati, eventi_progetti, anagrafi, fsl, prenotazioni, attestati, risorse, didattica, catalogo_ateneo, pdf, tutorato, tutorato_registro, sedute, schema (bloccata al web); `db_righe()`/`db_riga()`/`db_valore()`/`db_esegui()` in base.php per le query preparate
 ├── modelli_documenti/  # Modelli interni per i documenti precompilati (bloccata al web)
-├── strumenti/          # verifica_sito.sh, ambiente locale (locale/) e prove automatiche (prove/); bloccata al web
+├── strumenti/          # verifica_sito.sh, prove_server.sh, ambiente locale (locale/) e prove automatiche (prove/); bloccata al web
 ├── valutazione_fsl.php # Scheda di valutazione della struttura ospitante (link personale del docente)
 ├── convenzione_precompilata.php # Convenzione FSL già compilata con i dati della prenotazione (.docx)
 ├── install.php         # Installer guidato (da eliminare dopo l'uso)
@@ -263,7 +275,10 @@ eventidibest-cms/
 ├── risorsa_ics.php     # File .ics di una prenotazione di aula, laboratorio o sportello
 ├── persona.php         # Pagina pubblica di un referente scelto dall'anagrafe di Ateneo
 ├── incarico.php        # Lettera di incarico: controllo e conferma dello studente con SPID/CIE (link personale)
-├── firma_incarico.php  # Lettera di incarico: firma PAdES del docente e del direttore (Aruba o PDF firmato)
+├── firma_incarico.php  # Lettera di incarico: firma PAdES del docente e del direttore; dichiarazione di fine attività del docente
+├── registro_tutorato.php # Registro delle attività di tutorato (tutor: segna le ore; docente: approva e conferma la fine)
+├── giustifica.php      # Giustificazione dell'assenza da una seduta (link personale della convocazione)
+├── firma_verbale.php   # Verbale della seduta: firma PAdES del segretario e del coordinatore (Aruba o PDF firmato)
 ├── cerca_insegnamenti.php # Catalogo di Ateneo per i campi Insegnamento dei moduli (JSON)
 ├── profilo.php         # Profilo utente: dati SSO e modifica email
 ├── sw.js               # Service Worker (PWA)
@@ -313,7 +328,9 @@ Il database e` composto da **23 tabelle**:
 | `didattica_consigli`, `didattica_consigli_persone`, `didattica_sedute_presenze` | Consigli dei corsi di studio con referenti e componenti; presenze di ogni seduta |
 | `pratiche_operatori` | Operatori che hanno avuto in carico una pratica (la vedono e la integrano anche dopo il passaggio) |
 | `ateneo_cds`, `ateneo_insegnamenti`, `ateneo_insegnamenti_scaricati` | Catalogo di Ateneo: corsi di studio per anno di offerta e insegnamenti scaricati quando servono |
-| `tutorato_bandi`, `tutorato_incarichi`, `tutorato_eventi` | Bandi di tutorato, lettere di incarico (dati, stato, conferma SPID/CIE, PDF, protocollo) e loro storico |
+| `tutorato_bandi`, `tutorato_incarichi`, `tutorato_eventi` | Bandi di tutorato, lettere di incarico (dati, stato, conferma SPID/CIE, PDF, protocollo, fine attività, solleciti) e loro storico |
+| `tutorato_registro` | Registro delle attività del tutor (giorno, ore, attività, approvazione del docente) |
+| `didattica_convocazioni` | Convocazioni delle sedute per email: link personale per giustificare l'assenza, motivo |
 
 ---
 

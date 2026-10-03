@@ -70,7 +70,7 @@ done
 
 # -------------------------------------------------------------------------
 titolo "File e cartelle riservati"
-for p in .env config.php functions.php cache/configurazione_portale.json backups/ strumenti/verifica_sito.sh database/ install.php.save inc/base.php modelli_documenti/convenzione_precompilabile.docx uploads/convenzioni/; do
+for p in .env config.php functions.php cache/configurazione_portale.json backups/ strumenti/verifica_sito.sh database/ install.php.save inc/base.php modelli_documenti/convenzione_precompilabile.docx modelli_documenti/lettera_incarico_tutorato.docx uploads/convenzioni/ uploads/incarichi/ uploads/pratiche/ uploads/verbali/ strumenti/prove_server.sh; do
     c=$(codice "$BASE/$p")
     case "$c" in 403|404) bene "$p → $c";; *) male "$p risponde $c: deve essere bloccato (403/404)";; esac
 done

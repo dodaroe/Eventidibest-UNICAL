@@ -299,6 +299,13 @@ if ($mesi_pren > 0) {
     echo "- Conservazione prenotazioni: $n_an anonimizzate (attività concluse da più di $mesi_pren mesi).\n";
 }
 
+// - Tutorato: lettere protocollate o annullate da CONSERVAZIONE_INCARICHI_MESI (0 = mai) senza dati personali, PDF e registro;
+//   convocazioni delle sedute (link, email, motivi delle assenze) cancellate dopo CONSERVAZIONE_CONVOCAZIONI_MESI (predefinito 12)
+$mesi_inc = max(0, (int)(env_valore('CONSERVAZIONE_INCARICHI_MESI') ?? 0));
+if ($mesi_inc > 0 && function_exists('conserva_dati_tutorato')) echo "- Conservazione tutorato: " . conserva_dati_tutorato($conn, $mesi_inc) . " lettere di incarico senza dati personali (più vecchie di $mesi_inc mesi).\n";
+$mesi_conv = max(0, (int)(env_valore('CONSERVAZIONE_CONVOCAZIONI_MESI') ?? 12));
+if ($mesi_conv > 0 && function_exists('conserva_dati_sedute')) echo "- Conservazione sedute: " . conserva_dati_sedute($conn, $mesi_conv) . " convocazioni cancellate (sedute di più di $mesi_conv mesi fa).\n";
+
 $mesi_ut = max(0, (int)(env_valore('CONSERVAZIONE_UTENTI_MESI') ?? 0));
 if ($mesi_ut > 0) {
     // Esclusi anche i gestori abilitati da "Utenti & Abilitazioni" su un'area o un evento,

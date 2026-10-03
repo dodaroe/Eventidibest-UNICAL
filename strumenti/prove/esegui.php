@@ -2,6 +2,7 @@
 // =========================================================================
 // Prove automatiche del portale, da lanciare prima di ogni caricamento sul server:
 //   /c/xampp/php/php.exe -d extension=zip strumenti/prove/esegui.php
+// e sul server, dopo il caricamento: bash strumenti/prove_server.sh (vedi lì le variabili PROVE_DB_*)
 // 1. Prove delle funzioni su un database di prova usa e getta (eventi_prova, ricreato ogni volta da
 //    database/schema.sql + migrazioni): convenzioni, periodi, verifica FSL, valutazioni, documenti precompilati…
 // 2. Se l'ambiente locale è acceso (strumenti/locale/avvia.sh), prove delle pagine via HTTP: pagine pubbliche,
@@ -12,7 +13,7 @@ if (PHP_SAPI !== 'cli') exit;
 $SITO = realpath(__DIR__ . '/../..');
 chdir($SITO);
 $EMAIL = [];
-function inviaNotificaEmail($to, $subject, $body_html, $conn, $colore = null, array $allegati = []) { global $EMAIL; $EMAIL[] = ['a' => $to, 'oggetto' => $subject, 'corpo' => $body_html]; return true; }
+function inviaNotificaEmail($to, $subject, $body_html, $conn, $colore = null, array $allegati = []) { global $EMAIL; $EMAIL[] = ['a' => $to, 'oggetto' => $subject, 'corpo' => $body_html, 'allegati' => $allegati]; return true; }
 $_SERVER['HTTP_HOST'] = 'dibest2.unical.it'; $_SERVER['PHP_SELF'] = '/eventi/index.php';
 
 $OK = 0; $KO = 0;
@@ -24,15 +25,28 @@ function sezione(string $t): void { echo "\n== $t\n"; }
 
 // ---------------------------------------------------------------------------
 // Database di prova
+// Sul server (strumenti/prove_server.sh): PROVE_DB_HOST, PROVE_DB_USER, PROVE_DB_PASS e PROVE_DB_NAME indicano un utente MySQL
+// che può creare e cancellare il database di prova (il nome deve contenere «prova»: il database del portale non si tocca mai)
 $MYSQL = getenv('MYSQL_BIN') ?: 'C:/xampp/mysql/bin/mysql.exe';
-$conn = @new mysqli('127.0.0.1', 'root', '');
-if ($conn->connect_error) { fwrite(STDERR, "Database non raggiungibile: avvia MariaDB (bash strumenti/locale/avvia.sh).\n"); exit(2); }
-$conn->query("DROP DATABASE IF EXISTS eventi_prova");
-$conn->query("CREATE DATABASE eventi_prova CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
-exec('"' . $MYSQL . '" -u root eventi_prova < "' . $SITO . '/database/schema.sql" 2>&1', $out_sql, $rc);
+$DB_H = getenv('PROVE_DB_HOST') ?: '127.0.0.1'; $DB_U = getenv('PROVE_DB_USER') ?: 'root'; $DB_P = (string)(getenv('PROVE_DB_PASS') ?: ''); $DB_N = getenv('PROVE_DB_NAME') ?: 'eventi_prova';
+if (!preg_match('/^[A-Za-z0-9_]*prova[A-Za-z0-9_]*$/', $DB_N)) { fwrite(STDERR, "PROVE_DB_NAME deve contenere «prova» (es. eventi_prova): il database viene cancellato e ricreato.\n"); exit(2); }
+$conn = @new mysqli($DB_H, $DB_U, $DB_P);
+if ($conn->connect_error) { fwrite(STDERR, "Database non raggiungibile: avvia MariaDB (bash strumenti/locale/avvia.sh) o controlla PROVE_DB_HOST/USER/PASS.\n"); exit(2); }
+$conn->query("DROP DATABASE IF EXISTS `$DB_N`");
+if (!$conn->query("CREATE DATABASE `$DB_N` CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci")) { fwrite(STDERR, "Non posso creare il database di prova $DB_N: " . $conn->error . "\n"); exit(2); }
+putenv('MYSQL_PWD=' . $DB_P);
+exec('"' . $MYSQL . '" -h ' . escapeshellarg($DB_H) . ' -u ' . escapeshellarg($DB_U) . ' ' . $DB_N . ' < "' . $SITO . '/database/schema.sql" 2>&1', $out_sql, $rc);
+putenv('MYSQL_PWD');
 if ($rc !== 0) { fwrite(STDERR, "Import dello schema non riuscito: " . implode("\n", $out_sql) . "\n"); exit(2); }
-$conn->select_db('eventi_prova');
+$conn->select_db($DB_N);
 $conn->set_charset('utf8mb4');
+// I file generati dalle prove (lettere, estratti, verbali) vanno in cache/prove/, mai nelle cartelle vere del portale
+define('DIR_INCARICHI', 'cache/prove/incarichi/'); define('DIR_PRATICHE', 'cache/prove/pratiche/'); define('DIR_VERBALI', 'cache/prove/verbali/');
+$pulisci_prove = function () use ($SITO) {
+    foreach (['incarichi', 'pratiche', 'verbali'] as $d) { foreach (glob("$SITO/cache/prove/$d/{,.}*", GLOB_BRACE) ?: [] as $f) if (is_file($f)) @unlink($f); @rmdir("$SITO/cache/prove/$d"); }
+    @rmdir("$SITO/cache/prove");
+};
+$pulisci_prove();
 require $SITO . '/functions.php';
 @unlink($SITO . '/cache/schema_v29.ok');
 $marker = glob($SITO . '/cache/schema_v*.ok');
@@ -573,6 +587,11 @@ $dpi = leggi_decisioni_post($conn, 'piano', ['d_richiesto' => ['Ecologia', 'Geol
 prova(array_column($dpi['righe'], 'esito') === ['fuori_piano', 'in_piano'] && tabella_decisioni($dpi)[1][0] === ['Ecologia', '6', 'Approvato fuori piano'], "piano di studi: in piano / fuori piano");
 $EMAIL = [];
 prova(applica_esiti_seduta($conn, $s61, 50, 'Referente Rita') === [1, 0, 0] && pratica($conn, $pc)['stato'] === 'accolta' && in_array('nuovo@unical.it', array_column($EMAIL, 'a'), true), "esiti applicati: pratica accolta, email allo studente");
+$ev_es = $conn->query("SELECT * FROM pratiche_eventi WHERE pratica_id = $pc AND tipo = 'attivita' AND allegato LIKE '%estratto_%' ORDER BY id DESC LIMIT 1")->fetch_assoc();
+$pdf_es = $ev_es ? (string)@file_get_contents(RADICE_SITO . '/' . $ev_es['allegato']) : '';
+prova($ev_es && (int)$ev_es['interno'] === 0 && str_starts_with($pdf_es, '%PDF') && str_contains(implode(' ', array_column($EMAIL, 'corpo')), 'estratto del verbale'), "estratto del verbale in PDF nella pratica, visibile allo studente e citato nell'email");
+prova(is_file(RADICE_SITO . '/' . DIR_PRATICHE . '.htaccess'), "la cartella degli allegati delle pratiche è protetta (.htaccess)");
+if ($ev_es) @unlink(RADICE_SITO . '/' . $ev_es['allegato']);
 $conn->query("UPDATE pratiche SET stato = 'in_lavorazione', esito_seduta = 'rinviata' WHERE id = $pc");
 applica_esiti_seduta($conn, $s61, 50);
 prova(pratica($conn, $pc)['seduta_id'] === null && pratica($conn, $pc)['stato'] === 'in_lavorazione', "pratica rinviata: torna senza seduta per la prossima");
@@ -673,16 +692,142 @@ $inc = incarico_tutorato($conn, $it);
 prova(registra_firma_incarico($conn, $it, 'direttore', $firma_pades($pdf_doc, $crea_cert('Altra Persona', 'LTRPRS70A01D086Q'))) !== null, "firma di un certificato diverso da quello del direttore rifiutata");
 $pdf_fin = $firma_pades($pdf_doc, $crea_cert('Otto Ordinario', 'RDNTTO60A01D086Z'));
 $EMAIL = [];
-prova(registra_firma_incarico($conn, $it, 'direttore', $pdf_fin, 'firma remota Aruba') === null && incarico_tutorato($conn, $it)['stato'] === 'firmata' && array_column($EMAIL, 'a') === ['carla.car@unical.it'], "firma del direttore: email all'operatore per il protocollo");
+prova(registra_firma_incarico($conn, $it, 'direttore', $pdf_fin, 'firma remota Aruba') === null && incarico_tutorato($conn, $it)['stato'] === 'firmata' && in_array('carla.car@unical.it', array_column($EMAIL, 'a'), true), "firma del direttore: email all'operatore per il protocollo");
+prova(in_array('nuovo@unical.it', array_column($EMAIL, 'a'), true) && str_contains(implode(' ', array_column($EMAIL, 'corpo')), 'registro_tutorato.php?id=' . $it), "firma del direttore: il tutor riceve il link al registro delle attività");
 prova(count(firme_pades_pdf((string)file_get_contents(pdf_corrente_incarico(incarico_tutorato($conn, $it))))) === 2, "PDF finale con le due firme PAdES");
 $EMAIL = [];
 prova(protocolla_incarico($conn, $it, '7777/2026', '2026-10-20', true, 'Carla') === null && incarico_tutorato($conn, $it)['stato'] === 'protocollata' && ($EMAIL[0]['a'] ?? '') === 'nuovo@unical.it', "protocollo registrato e copia firmata allo studente");
 $ev_t = array_column($conn->query("SELECT tipo FROM tutorato_eventi WHERE incarico_id = $it ORDER BY id")->fetch_all(MYSQLI_ASSOC), 'tipo');
 prova($ev_t === ['creata', 'inviata', 'errore', 'confermata', 'firma_docente', 'firma_direttore', 'protocollata', 'copia'], "storico completo della lettera", json_encode($ev_t));
+
+sezione("Tutorato: registro delle attività, fine attività firmata dal docente, promemoria e solleciti");
+prova(salva_dati_fine_attivita($conn, $it, ['docente_titolo' => 'Prof.ssa', 'insegnamento_docente' => 'Chimica generale', 'corso_laurea' => 'Scienze Biologiche', 'data_inizio' => date('Y-m-d', strtotime('-30 days')), 'data_fine' => date('Y-m-d', strtotime('+3 days'))]) === null
+      && incarico_tutorato($conn, $it)['docente_titolo'] === 'Prof.ssa', "dati della fine attività salvati dall'operatore");
+prova(salva_dati_fine_attivita($conn, $it, ['data_inizio' => '2026-12-01', 'data_fine' => '2026-11-01']) !== null, "periodo al contrario rifiutato");
+$ieri = date('Y-m-d', strtotime('-1 day'));
+prova(aggiungi_registro($conn, $it, date('Y-m-d', strtotime('+1 day')), '2', 'Esercitazioni') !== null, "registro: data nel futuro rifiutata");
+prova(aggiungi_registro($conn, $it, date('Y-m-d', strtotime('-40 days')), '2', 'Esercitazioni') !== null, "registro: data prima dell'inizio rifiutata");
+prova(aggiungi_registro($conn, $it, $ieri, '0,3', 'Esercitazioni') !== null && aggiungi_registro($conn, $it, $ieri, '13', 'Esercitazioni') !== null && aggiungi_registro($conn, $it, $ieri, '2', '  ') !== null, "registro: ore (mezz'ore, max 12) e attività controllate");
+prova(aggiungi_registro($conn, $it, $ieri, '4,5', 'Esercitazioni di stechiometria') === null && aggiungi_registro($conn, $it, date('Y-m-d', strtotime('-3 days')), '12', 'Ricevimento studenti') === null
+      && aggiungi_registro($conn, $it, date('Y-m-d', strtotime('-5 days')), '12', 'Preparazione esame') === null, "registro: tre giorni di attività segnati dal tutor");
+prova(aggiungi_registro($conn, $it, $ieri, '12', 'Troppe ore') !== null, "registro: non si superano le ore dell'incarico");
+$reg = registro_incarico($conn, $it);
+prova(count($reg) === 3 && ore_registro($reg)['totale'] === 28.5 && $reg[0]['data'] < $reg[2]['data'], "registro in ordine di data con il totale delle ore");
+$ir_t = incarichi_registro($conn, $stud); $ir_d = incarichi_registro($conn, $u98);
+prova(($ir_t[0]['_ruolo'] ?? '') === 'tutor' && ($ir_d[0]['_ruolo'] ?? '') === 'docente' && incarichi_registro($conn, $u73) === [], "registro visibile al tutor e al docente responsabile, non ad altri");
+prova(togli_registro($conn, $it, (int)$reg[1]['id']) === null && count(registro_incarico($conn, $it)) === 2, "il tutor toglie una riga non ancora approvata");
+prova(conferma_fine_attivita($conn, $it)[1] !== null, "senza la fine dichiarata e con ore da approvare la fine non si conferma");
+$EMAIL = [];
+prova(richiedi_fine_attivita($conn, $it) === null && incarico_tutorato($conn, $it)['fine_stato'] === 'richiesta' && array_column($EMAIL, 'a') === ['rita.ref@unical.it'] && str_contains($EMAIL[0]['corpo'], 'Prof.ssa Rita'), "il tutor dichiara concluse le attività: email al docente");
+$reg = registro_incarico($conn, $it);
+prova(decidi_registro($conn, $it, 'respinta', [(int)$reg[1]['id']], 'Non pertinente') === 1 && decidi_registro($conn, $it, 'approvata') === 1, "il docente respinge una riga e approva le altre");
+[$tok_f, $ef] = conferma_fine_attivita($conn, $it, 'Rita');
+$inc = incarico_tutorato($conn, $it);
+prova($ef === null && $inc['fine_stato'] === 'da_firmare' && (float)$inc['ore_approvate'] === 12.0 && incarico_per_token($conn, 'fine', (string)$tok_f)['id'] == $it, "fine confermata: dichiarazione con le ore approvate e link di firma", (string)$ef);
+prova(aggiungi_registro($conn, $it, $ieri, '1', 'Dopo la fine') !== null, "dopo la conferma il registro è chiuso");
+$df = dati_fine_attivita($inc);
+prova($df['DOCENTE'] === 'Prof.ssa Rita Referente' && $df['SOTTOSCRITTO'] === 'La sottoscritta' && $df['INSEGNAMENTO'] === 'Chimica generale' && $df['CORSO'] === 'Scienze Biologiche' && $df['ORE'] === '12' && $df['TUTOR'] === 'Dott.ssa Arrivata Nuovo' && $df['DECRETO_BANDO'] === '123/2026 del 01/09/2026', "dichiarazione di fine attività compilata con i dati dell'operatore");
+$pdf_f = (string)file_get_contents(pdf_fine_corrente($inc));
+[, $spazi_f] = pdf_fine_attivita($inc, registro_incarico($conn, $it), 12.0);
+prova(str_starts_with($pdf_f, '%PDF') && isset($spazi_f['docente']) && firme_pades_pdf($pdf_f) === [], "PDF della dichiarazione con lo spazio per la firma del docente");
+$conn->query("UPDATE tutorato_incarichi SET docente_cf = 'RFRRTI80A41D086K' WHERE id = $it");
+$e1 = registra_firma_fine($conn, $it, $firma_pades($pdf_f, $crea_cert("Altra Persona", "LTRPRS70A01D086Q"))); $e2 = registra_firma_fine($conn, $it, $pdf_f);
+prova($e1 !== null && $e2 !== null, "dichiarazione: firma di un altro certificato o senza firma rifiutata", json_encode([$e1, $e2]));
+$EMAIL = [];
+$e3 = registra_firma_fine($conn, $it, $firma_pades($pdf_f, $cert_doc), "caricato");
+prova($e3 === null && incarico_tutorato($conn, $it)['fine_stato'] === 'firmata'
+      && in_array('carla.car@unical.it', array_column($EMAIL, 'a'), true) && in_array('nuovo@unical.it', array_column($EMAIL, 'a'), true), "firma del docente: avviso «attività completate» all'operatore e al tutor");
+$m_op = array_values(array_filter($EMAIL, fn($e) => $e['a'] === 'carla.car@unical.it'))[0] ?? [];
+prova(str_starts_with($m_op['oggetto'] ?? '', 'Attività completate') && str_contains($m_op['corpo'] ?? '', 'Preparazione esame') && !str_contains($m_op['corpo'] ?? '', 'stechiometria') && count($m_op['allegati'] ?? []) === 1, "l'avviso ha il riepilogo delle ore approvate e il PDF firmato in allegato");
+prova(protocolla_fine_attivita($conn, $it, '', 'Carla') !== null && protocolla_fine_attivita($conn, $it, '8888/2026', 'Carla') === null && incarico_tutorato($conn, $it)['fine_stato'] === 'protocollata', "protocollo della fine attività");
+// Solleciti delle firme ferme: ogni FIRME_GIORNI_SOLLECITO giorni (5), al terzo lo sa l'operatore
+$ns = duplica_incarico($conn, $it);
+$conn->query("UPDATE tutorato_incarichi SET stato = 'confermata', confermata_il = NOW() - INTERVAL 10 DAY, token_docente = '" . str_repeat('c', 40) . "' WHERE id = $ns");
+$EMAIL = [];
+prova(promemoria_tutorato($conn) >= 1 && in_array('rita.ref@unical.it', array_column($EMAIL, 'a'), true) && str_contains(implode(' ', array_column($EMAIL, 'oggetto')), 'Sollecito'), "sollecito al docente per la firma ferma da 10 giorni");
+$EMAIL = []; promemoria_tutorato($conn);
+prova(!in_array('rita.ref@unical.it', array_column($EMAIL, 'a'), true), "nessun nuovo sollecito prima di 5 giorni");
+$conn->query("UPDATE tutorato_incarichi SET solleciti = 2, sollecito_il = NOW() - INTERVAL 6 DAY WHERE id = $ns");
+$EMAIL = []; promemoria_tutorato($conn);
+prova(in_array('carla.car@unical.it', array_column($EMAIL, 'a'), true) && (int)incarico_tutorato($conn, $ns)['solleciti'] === 3, "terzo sollecito: avviso anche all'operatore");
+$EMAIL = []; $conn->query("UPDATE tutorato_incarichi SET sollecito_il = NOW() - INTERVAL 30 DAY WHERE id = $ns"); promemoria_tutorato($conn);
+prova(!in_array('rita.ref@unical.it', array_column($EMAIL, 'a'), true), "dopo tre solleciti non se ne mandano altri");
+// Promemoria al tutor verso la fine del periodo
+$nt = duplica_incarico($conn, $it);
+$conn->query("UPDATE tutorato_incarichi SET stato = 'firmata', firmata_direttore_il = NOW() - INTERVAL 20 DAY, data_inizio = CURDATE() - INTERVAL 20 DAY, data_fine = CURDATE() + INTERVAL 2 DAY WHERE id = $nt");
+$EMAIL = []; promemoria_tutorato($conn);
+$m_t = array_values(array_filter($EMAIL, fn($e) => $e['a'] === 'nuovo@unical.it'))[0] ?? [];
+prova(str_contains($m_t['corpo'] ?? '', 'Ho concluso le attività') && str_contains($m_t['corpo'] ?? '', 'registro_tutorato.php?id=' . $nt), "promemoria al tutor verso la fine del periodo");
+$EMAIL = []; promemoria_tutorato($conn);
+prova(!in_array('nuovo@unical.it', array_column($EMAIL, 'a'), true), "al tutor al massimo un promemoria a settimana");
+annulla_incarico($conn, $ns, 'prova'); annulla_incarico($conn, $nt, 'prova');
+
+
 $nd = duplica_incarico($conn, $it);
 prova($nd > 0 && incarico_tutorato($conn, $nd)['stato'] === 'bozza' && annulla_incarico($conn, $nd, 'prova') === null && incarico_tutorato($conn, $nd)['token_studente'] === null, "copia in bozza e annullamento");
 prova(firma_remota_aruba('%PDF', 'u', 'p', '1')[0] === null, "firma remota non configurata: messaggio, nessun invio");
+// Conservazione: lettere protocollate da più di N mesi senza dati personali, PDF e registro
+$f_fine = pdf_fine_corrente(incarico_tutorato($conn, $it));
+prova(conserva_dati_tutorato($conn, 0) === 0 && conserva_dati_tutorato($conn, 12) === 0, "conservazione: niente da fare con 0 mesi o lettere recenti");
+$conn->query("UPDATE tutorato_incarichi SET aggiornata_il = NOW() - INTERVAL 13 MONTH WHERE id = $it");
+$ia = null;
+prova(conserva_dati_tutorato($conn, 12) === 1 && ($ia = incarico_tutorato($conn, $it))['anonimizzata'] == 1 && $ia['codice_fiscale'] === '' && $ia['email'] === '' && $ia['studente_firma_json'] === null && $ia['cognome'] === 'Nuovo' && $ia['fine_protocollo'] === '8888/2026'
+      && registro_incarico($conn, $it) === [] && $f_fine && !is_file($f_fine), "conservazione: dati personali, PDF e registro cancellati, restano nome e protocolli");
+prova(conserva_dati_tutorato($conn, 12) === 0, "conservazione: una lettera si anonimizza una volta sola");
 foreach (glob(RADICE_SITO . '/' . DIR_INCARICHI . 'TU-*.pdf') ?: [] as $f_t) @unlink($f_t);
+
+sezione("Sedute: convocazione per email, giustificazione, importa componenti, verbale firmato in PAdES");
+$d62 = date('Y-m-d', strtotime('+10 days'));
+$q("INSERT INTO didattica_sedute (id, consiglio_id, organo, data, ora_inizio, luogo, odg, coordinatore) VALUES (62, $c1, 'Consiglio di prova', NULL, '15:00', 'aula L3', 'Comunicazioni\nPratiche studenti', 'Prof. Otto Ordinario')");
+prova(invia_convocazione($conn, seduta_didattica($conn, 62), 'Convocazione', 'Testo', true)[2] !== null, "convocazione: serve la data della seduta");
+$conn->query("UPDATE didattica_sedute SET data = '$d62' WHERE id = 62");
+$s62 = seduta_didattica($conn, 62);
+prova(invia_convocazione($conn, $s62, '', 'Testo', true)[2] !== null, "convocazione: oggetto e testo obbligatori");
+$EMAIL = [];
+[$nc, $nse, $ec] = invia_convocazione($conn, $s62, 'Convocazione {ORGANO} – {DATA}', TESTO_CONVOCAZIONE, true);
+$m_ord = array_values(array_filter($EMAIL, fn($e) => $e['a'] === 'otto.ord@unical.it'))[0] ?? [];
+prova($ec === null && $nc === 2 && $nse === 1 && ($m_ord['oggetto'] ?? '') === 'Convocazione Consiglio di prova – ' . date('d/m/Y', strtotime($d62)), "convocazione inviata ai componenti con l'email (1 senza email)", json_encode([$nc, $nse, $ec]));
+prova(str_contains($m_ord['corpo'] ?? '', 'Gentile Ordinario Otto') && str_contains($m_ord['corpo'] ?? '', '1. Comunicazioni') && str_contains($m_ord['corpo'] ?? '', 'giustifica.php?t=') && str_contains($m_ord['corpo'] ?? '', 'aula L3'), "testo personalizzato con i segnaposti e il link per giustificare");
+$EMAIL = [];
+invia_convocazione($conn, $s62, 'Convocazione', TESTO_CONVOCAZIONE, false);
+prova(!str_contains(implode(' ', array_column($EMAIL, 'corpo')), 'giustifica') && (int)$conn->query("SELECT COUNT(*) n FROM didattica_convocazioni WHERE seduta_id = 62")->fetch_assoc()['n'] === 2, "senza link: la riga del link sparisce e i link non si duplicano");
+$tok_g = (string)$conn->query("SELECT c.token FROM didattica_convocazioni c JOIN didattica_consigli_persone p ON p.id = c.componente_id WHERE c.seduta_id = 62 AND p.email = 'otto.ord@unical.it'")->fetch_assoc()['token'];
+prova(giustifica_assenza($conn, str_repeat('0', 40), '') !== null && giustifica_assenza($conn, 'x', '') !== null, "giustificazione: link non valido rifiutato");
+prova(giustifica_assenza($conn, $tok_g, 'Missione a Roma') === null, "giustificazione dal link della convocazione");
+$p62 = presenze_registrate($conn, seduta_didattica($conn, 62));
+prova(count($p62) === 3 && riepilogo_presenze($p62) === ['P' => 2, 'AG' => 1, 'AI' => 0] && convocazioni_seduta($conn, 62)[(int)array_values(array_filter($p62, fn($r) => $r['stato'] === 'AG'))[0]['componente_id']]['motivo'] === 'Missione a Roma', "l'assenza giustificata è nelle presenze, gli altri restano presenti");
+$conn->query("UPDATE didattica_sedute SET data = '2020-01-01' WHERE id = 62");
+prova(giustifica_assenza($conn, $tok_g, '') !== null && invia_convocazione($conn, seduta_didattica($conn, 62), 'a', 'b', true)[2] !== null, "seduta passata: niente giustificazione né convocazione");
+$conn->query("UPDATE didattica_sedute SET data = '$d62' WHERE id = 62");
+// Importa i componenti in un altro consiglio
+$c2 = (int)array_keys($cons)[1];
+prova(importa_componenti_consiglio($conn, $c1, $c2) === 3 && importa_componenti_consiglio($conn, $c1, $c2) === 0 && array_column(persone_consiglio($conn, $c2), 'qualifica') === array_column(persone_consiglio($conn, $c1), 'qualifica'), "componenti importati da un altro consiglio con i gruppi, senza doppioni");
+prova(importa_componenti_consiglio($conn, $c1, $c1) === 0, "non si importa un consiglio in se stesso");
+$conn->query("DELETE FROM didattica_consigli_persone WHERE consiglio_id = $c2");
+// Verbale in PDF firmato dal segretario e poi dal coordinatore
+$pv = new PdfSemplice(['piede' => 'Verbale di prova']); $pv->paragrafo('Verbale della seduta di prova'); $pdf_v = $pv->pdf();
+prova(invia_verbale_alla_firma($conn, 62, 'non un pdf', 'seg@unical.it', 'otto.ord@unical.it') !== null && invia_verbale_alla_firma($conn, 62, $pdf_v, 'seg@unical.it', '') !== null, "verbale: serve il PDF e le due email");
+$EMAIL = [];
+prova(invia_verbale_alla_firma($conn, 62, $pdf_v, 'Seg@Unical.it', 'otto.ord@unical.it') === null && seduta_didattica($conn, 62)['verbale_stato'] === 'segretario' && array_column($EMAIL, 'a') === ['seg@unical.it'] && str_contains($EMAIL[0]['corpo'], 'firma_verbale.php?t='), "verbale inviato alla firma: email al segretario");
+$s62 = seduta_didattica($conn, 62);
+prova(seduta_per_token_verbale($conn, (string)$s62['verbale_token'])['id'] == 62 && firmatario_verbale($s62, ['email' => 'seg@unical.it']) && !firmatario_verbale($s62, ['email' => 'otto.ord@unical.it']), "la pagina di firma riconosce il segretario dall'accesso");
+prova(registra_firma_verbale($conn, 62, $pdf_v) !== null && registra_firma_verbale($conn, 62, "0\x82\x01\x00p7m") !== null, "verbale: PDF senza firma o CAdES rifiutati");
+$cert_seg = $crea_cert('Sara Segretaria', 'SGRSRA80A41D086K');
+$v1 = $firma_pades($pdf_v, $cert_seg);
+$EMAIL = [];
+prova(registra_firma_verbale($conn, 62, $v1, 'caricato') === null && seduta_didattica($conn, 62)['verbale_stato'] === 'coordinatore' && seduta_didattica($conn, 62)['verbale_token'] !== $s62['verbale_token'] && array_column($EMAIL, 'a') === ['otto.ord@unical.it'], "firma del segretario: il verbale passa al coordinatore (nuovo link)");
+$EMAIL = [];
+$v2 = $firma_pades($v1, $crea_cert('Otto Ordinario', 'RDNTTO60A01D086Z'));
+prova(registra_firma_verbale($conn, 62, $v2, 'firma remota Aruba') === null && seduta_didattica($conn, 62)['verbale_stato'] === 'firmato' && in_array('rita.ref@unical.it', array_column($EMAIL, 'a'), true) && count($EMAIL[0]['allegati'] ?? []) === 1, "firma del coordinatore: verbale firmato inviato ai referenti con il PDF");
+prova(is_file(RADICE_SITO . '/' . DIR_VERBALI . '.htaccess') && is_file(RADICE_SITO . '/' . DIR_INCARICHI . '.htaccess'), "cartelle dei verbali e delle lettere protette (.htaccess)");
+prova(count(firme_pades_pdf((string)file_get_contents(percorso_verbale_pdf(seduta_didattica($conn, 62))))) === 2 && registra_firma_verbale($conn, 62, $v2) !== null, "PDF del verbale con le due firme PAdES; non si firma due volte");
+$conn->query("UPDATE didattica_sedute SET verbale_stato = 'segretario', verbale_inviato_il = NOW() - INTERVAL 8 DAY, verbale_solleciti = 0, verbale_sollecito_il = NULL WHERE id = 62");
+$EMAIL = [];
+prova(solleciti_verbali($conn) === 1 && solleciti_verbali($conn) === 0 && ($EMAIL[0]['a'] ?? '') === 'seg@unical.it', "sollecito della firma del verbale ferma, una volta ogni 5 giorni");
+foreach (glob(RADICE_SITO . '/' . DIR_VERBALI . 'verbale_62_*.pdf') ?: [] as $f_v) @unlink($f_v);
+prova(conserva_dati_sedute($conn, 12) === 0, "conservazione: le convocazioni delle sedute recenti restano");
+$conn->query("UPDATE didattica_sedute SET data = CURDATE() - INTERVAL 13 MONTH WHERE id = 62");
+prova(conserva_dati_sedute($conn, 12) === 2 && convocazioni_seduta($conn, 62) === [] && riepilogo_presenze(presenze_registrate($conn, seduta_didattica($conn, 62)))['AG'] === 1, "conservazione: convocazioni cancellate, le presenze restano");
 
 // ---------------------------------------------------------------------------
 // Prove delle pagine sull'ambiente locale (se acceso)
@@ -697,7 +842,7 @@ $http = function (string $url, ?array $post = null, string $jar = '') use ($BASE
     curl_close($ch);
     return $r;
 };
-if (!function_exists('curl_init') || $http('/eventi/')['codice'] !== 200) {
+if (getenv('PROVE_SOLO_FUNZIONI') || !function_exists('curl_init') || $http('/eventi/')['codice'] !== 200) {
     echo "\n(ambiente locale spento: prove delle pagine saltate — avvia bash strumenti/locale/avvia.sh)\n";
 } else {
     sezione("Pagine dell'ambiente locale ($BASE)");
@@ -776,8 +921,16 @@ if (!function_exists('curl_init') || $http('/eventi/')['codice'] !== 200) {
     $loc->query("DELETE FROM pagine_eventi WHERE id = $pid_c");
     // Didattica: sedute e consigli, costruttore dei moduli, tutorato; catalogo degli insegnamenti e pagine con link personale
     $c_loc = (int)($loc->query("SELECT MIN(id) n FROM didattica_consigli")->fetch_assoc()['n'] ?? 0);
+    $pagine_d = [];
     foreach (['didattica.php?tab=sedute', "didattica.php?tab=sedute&consiglio=$c_loc", "didattica.php?tab=sedute&nuova=1&consiglio_id=$c_loc", 'didattica.php?tab=moduli&nuovo=1', 'didattica.php?tab=pratiche&carico=seguite',
-              'tutorato.php', 'tutorato.php?nuovo_bando=1'] as $pag) {
+              'tutorato.php', 'tutorato.php?nuovo_bando=1'] as $pag_x) $pagine_d[] = $pag_x;
+    $s_loc = (int)($loc->query("SELECT MIN(id) n FROM didattica_sedute")->fetch_assoc()['n'] ?? 0); $i_loc = (int)($loc->query("SELECT MIN(id) n FROM tutorato_incarichi")->fetch_assoc()['n'] ?? 0);
+    if ($s_loc) $pagine_d[] = "didattica.php?tab=sedute&id=$s_loc";
+    if ($i_loc) {
+        $pagine_d[] = "tutorato.php?incarico=$i_loc";
+        prova(str_starts_with($http("/eventi/admin/tutorato.php?incarico=$i_loc&file=fine_anteprima", null, $jar)['corpo'], '%PDF'), "anteprima della dichiarazione di fine attività in PDF");
+    }
+    foreach ($pagine_d as $pag) {
         $r = $http('/eventi/admin/' . $pag, null, $jar);
         $err_php = preg_match('/<b>(Fatal error|Parse error|Warning|Deprecated|Notice)<\/b>|Uncaught /', $r['corpo']);
         prova($r['codice'] === 200 && !$err_php && str_contains($r['corpo'], '</html>'), "pannello Didattica: $pag", "risposta " . $r['codice'] . ($err_php ? ' con errore PHP' : ''));
@@ -785,14 +938,17 @@ if (!function_exists('curl_init') || $http('/eventi/')['codice'] !== 200) {
     $r = $http('/eventi/cerca_insegnamenti.php?azione=tipi', null, $jar);
     prova($r['codice'] === 200 && is_array(json_decode($r['corpo'], true)), "catalogo degli insegnamenti (JSON)");
     prova($http('/eventi/cerca_insegnamenti.php?azione=tipi')['codice'] === 401, "catalogo degli insegnamenti: serve l'accesso");
-    foreach (['/eventi/incarico.php?t=' . str_repeat('a', 40) => 'Lettera non disponibile', '/eventi/firma_incarico.php?t=' . str_repeat('b', 40) => 'Lettera non disponibile'] as $u => $testo) {
+    foreach (['/eventi/incarico.php?t=' . str_repeat('a', 40) => 'Lettera non disponibile', '/eventi/firma_incarico.php?t=' . str_repeat('b', 40) => 'Documento non disponibile',
+              '/eventi/firma_verbale.php?t=' . str_repeat('c', 40) => 'Verbale non disponibile', '/eventi/giustifica.php?t=' . str_repeat('d', 40) => 'Link non valido', '/eventi/registro_tutorato.php' => 'Registro delle attività'] as $u => $testo) {
         $r = $http($u, null, $jar2);
         prova($r['codice'] === 200 && str_contains($r['corpo'], $testo), "link personale non valido: $u");
     }
+    prova(in_array($http('/eventi/uploads/verbali/')['codice'], [403, 404], true), "verbali firmati non raggiungibili dal web");
     prova($http('/eventi/uploads/incarichi/')['codice'] === 403 && $http('/eventi/modelli_documenti/lettera_incarico_tutorato.docx')['codice'] === 403, "lettere di incarico e modello Word non raggiungibili dal web");
     @unlink($jar); @unlink($jar2);
 }
 
-$conn->query("DROP DATABASE IF EXISTS eventi_prova");
+$conn->query("DROP DATABASE IF EXISTS `$DB_N`");
+$pulisci_prove();
 echo "\n" . ($KO ? "\e[31m$KO prove fallite\e[0m, $OK superate.\n" : "\e[32mTutte le $OK prove superate.\e[0m\n");
 exit($KO ? 1 : 0);

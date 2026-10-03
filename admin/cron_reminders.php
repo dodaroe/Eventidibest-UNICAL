@@ -61,6 +61,12 @@ while ($res_ris && $x_ris = $res_ris->fetch_assoc()) {
 // 4. Didattica: promemoria a chi ha in carico una pratica ferma da troppi giorni (giorni indicati nel modulo)
 if (function_exists('promemoria_pratiche_ferme')) $inviati += promemoria_pratiche_ferme($conn);
 
+// 5. Tutorato: promemoria del registro delle attività ai tutor e ai docenti, solleciti delle firme ferme (lettere e fine attività)
+if (function_exists('promemoria_tutorato')) $inviati += promemoria_tutorato($conn);
+
+// 6. Sedute: solleciti delle firme del verbale (segretario e coordinatore)
+if (function_exists('solleciti_verbali')) $inviati += solleciti_verbali($conn);
+
 // Redirect e Output
 if (isset($_GET['manual'])) {
     flash_set(" Elaborazione Reminder completata! Sono stati inviati <strong>$inviati</strong> promemoria.");

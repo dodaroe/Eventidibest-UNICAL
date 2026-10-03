@@ -85,6 +85,44 @@ if (!function_exists('imposta_cookie_uscito')) {
 }
 
 // 1. GESTIONE AUTENTICAZIONE SSO UNIFICATA (Con Auto-Riparazione Email)
+if (!function_exists('db_query')) {
+    // Query con parametri (prepared statement): i valori non entrano mai nel testo SQL.
+    // db_righe($conn, "SELECT * FROM t WHERE id = ? AND stato = ?", [5, 'ok']) → righe; db_riga → una riga o null;
+    // db_valore → primo campo della prima riga o null; db_esegui → righe toccate (-1 se la query non riesce).
+    // Tipo di ogni parametro: int → i, float → d, il resto (anche null) → s.
+    function db_query($conn, string $sql, array $par = []) {
+        $st = $conn->prepare($sql);
+        if (!$st) return false;
+        if ($par) {
+            $tipi = '';
+            foreach ($par as $v) $tipi .= is_int($v) || is_bool($v) ? 'i' : (is_float($v) ? 'd' : 's');
+            $par = array_map(fn($v) => is_bool($v) ? (int)$v : $v, array_values($par));
+            $st->bind_param($tipi, ...$par);
+        }
+        if (!$st->execute()) return false;
+        $r = $st->get_result();
+        return $r === false ? $st : $r;
+    }
+    function db_righe($conn, string $sql, array $par = []): array {
+        $r = db_query($conn, $sql, $par);
+        return $r instanceof mysqli_result ? $r->fetch_all(MYSQLI_ASSOC) : [];
+    }
+    function db_riga($conn, string $sql, array $par = []): ?array {
+        $r = db_query($conn, $sql, $par);
+        return $r instanceof mysqli_result ? ($r->fetch_assoc() ?: null) : null;
+    }
+    function db_valore($conn, string $sql, array $par = []) {
+        $r = db_query($conn, $sql, $par);
+        $x = $r instanceof mysqli_result ? $r->fetch_row() : null;
+        return $x ? $x[0] : null;
+    }
+    function db_esegui($conn, string $sql, array $par = []): int {
+        $r = db_query($conn, $sql, $par);
+        if ($r === false) return -1;
+        return $r instanceof mysqli_stmt ? $r->affected_rows : $conn->affected_rows;
+    }
+}
+
 if (!function_exists('metadati_accesso_saml')) {
     // Come si è autenticata la persona (dall'IdP SAML): SPID (con il livello), CIE o credenziali di Ateneo, con identificativi
     // e ora dell'autenticazione. Si conservano in sessione ($_SESSION['auth_meta']) e finiscono nella lettera di incarico

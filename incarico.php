@@ -89,6 +89,9 @@ require_once 'header.php';
                         <?php if ($firma): ?><p>Il <?php echo date('d/m/Y \a\l\l\e H:i', strtotime($firma['confermata_il'])); ?> con <?php echo $h(METODI_ACCESSO[$firma['metodo']] ?? $firma['metodo']); ?>.</p><?php endif; ?>
                         <p class="mb-0">Ora: <?php echo $h(STATI_INCARICO[$i['stato']][0] ?? $i['stato']); ?>. Quando avrà tutte le firme riceverai la lettera per email.</p>
                     </div></div>
+                    <?php if (in_array($i['stato'], ['firmata', 'protocollata'], true)): ?>
+                        <a class="btn btn-success fw-bold mt-3" href="registro_tutorato.php?id=<?php echo (int)$i['id']; ?>"><i class="fa fa-clipboard-list me-1" aria-hidden="true"></i>Apri il registro delle attività</a>
+                    <?php endif; ?>
                 <?php endif; ?>
             </div>
             <div class="col-lg-7">

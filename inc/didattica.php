@@ -169,12 +169,11 @@ if (!function_exists('sportelli_utente')) {
         if (!$u || empty($u['id'])) return [];
         $pid = (string)($u['persona_id'] ?? '');
         $uff = utente_operatore_ufficio($conn, $u, 'ricevimento') || utente_operatore_ufficio($conn, $u, null) && !operatori_ufficio($conn, 'ricevimento');
-        $where = [];
-        if ($pid !== '') $where[] = "r.persona_id = '" . $conn->real_escape_string($pid) . "'";
+        $where = []; $par = [];
+        if ($pid !== '') { $where[] = "r.persona_id = ?"; $par[] = $pid; }
         if ($uff) $where[] = "r.ufficio = 'didattica'";
         if (!$where) return [];
-        $r = @$conn->query("SELECT r.*, p.titolo AS area_titolo, p.slug AS area_slug FROM risorse r JOIN pagine_eventi p ON p.id = r.pagina_id WHERE " . implode(' OR ', $where) . " ORDER BY r.ufficio DESC, r.nome");
-        return $r ? $r->fetch_all(MYSQLI_ASSOC) : [];
+        return db_righe($conn, "SELECT r.*, p.titolo AS area_titolo, p.slug AS area_slug FROM risorse r JOIN pagine_eventi p ON p.id = r.pagina_id WHERE " . implode(' OR ', $where) . " ORDER BY r.ufficio DESC, r.nome", $par);
     }
 }
 
@@ -299,8 +298,7 @@ if (!function_exists('campi_studente')) {
 
 if (!function_exists('modulo_didattica')) {
     function modulo_didattica($conn, int $id): ?array {
-        $r = @$conn->query("SELECT * FROM didattica_moduli WHERE id = $id");
-        return $r ? ($r->fetch_assoc() ?: null) : null;
+        return db_riga($conn, "SELECT * FROM didattica_moduli WHERE id = ?", [$id]);
     }
 }
 
@@ -627,8 +625,7 @@ if (!function_exists('html_risposta_pratica')) {
 if (!function_exists('pratica')) {
     // Pratica con il titolo del modulo (per id)
     function pratica($conn, int $id): ?array {
-        $r = @$conn->query("SELECT p.*, m.titolo AS modulo_titolo, m.email_ufficio, m.categoria FROM pratiche p JOIN didattica_moduli m ON m.id = p.modulo_id WHERE p.id = $id");
-        return $r ? ($r->fetch_assoc() ?: null) : null;
+        return db_riga($conn, "SELECT p.*, m.titolo AS modulo_titolo, m.email_ufficio, m.categoria FROM pratiche p JOIN didattica_moduli m ON m.id = p.modulo_id WHERE p.id = ?", [$id]);
     }
 }
 
@@ -694,7 +691,7 @@ if (!function_exists('evento_pratica')) {
         $st = $conn->prepare("INSERT INTO pratiche_eventi (pratica_id, tipo, autore, utente_id, stato, testo, allegato, nome_allegato, interno, autore_nome) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         $uid_b = $uid > 0 ? $uid : null; $int = $interno ? 1 : 0; $an = mb_substr($autore_nome, 0, 200);
         $st->bind_param("ississssis", $pratica_id, $tipo, $autore, $uid_b, $stato, $testo, $allegato, $nome_all, $int, $an); $st->execute();
-        $conn->query("UPDATE pratiche SET aggiornata_il = NOW() WHERE id = $pratica_id");
+        db_esegui($conn, "UPDATE pratiche SET aggiornata_il = NOW() WHERE id = ?", [$pratica_id]);
     }
 }
 
@@ -741,13 +738,13 @@ if (!function_exists('messaggio_pratica')) {
         if ($autore === 'studente' && $p['stato'] === 'integrazione') {
             $rq = json_decode((string)($p['richiesta_json'] ?? ''), true) ?: [];
             if (($rq['tipo'] ?? 'documenti') !== 'autodichiarazione') {
-                $conn->query("UPDATE pratiche SET stato = 'in_lavorazione', richiesta_json = NULL WHERE id = $id");
+                db_esegui($conn, "UPDATE pratiche SET stato = 'in_lavorazione', richiesta_json = NULL WHERE id = ?", [$id]);
                 evento_pratica($conn, $id, 'stato', 'studente', $uid, 'in_lavorazione', 'Integrazione inviata');
             }
         }
         if ($autore === 'ufficio') {
             // Un operatore che aveva la pratica prima (ufficio precedente) la integra: lo sa chi ce l'ha in carico ora
-            $u_aut = $uid > 0 ? ($conn->query("SELECT * FROM utenti WHERE id = " . (int)$uid)->fetch_assoc() ?: null) : null;
+            $u_aut = $uid > 0 ? db_riga($conn, "SELECT * FROM utenti WHERE id = ?", [$uid]) : null;
             $o_aut = $u_aut ? operatore_ufficio($conn, 0, $u_aut) : null;
             $o_car = !empty($p['assegnata_a']) ? operatore_ufficio($conn, (int)$p['assegnata_a']) : null;
             if ($o_aut && $o_car && (int)$o_aut['id'] !== (int)$o_car['id'] && in_array((int)$o_aut['id'], operatori_pratica($conn, $id), true))
@@ -811,8 +808,8 @@ if (!function_exists('assegna_pratica')) {
         $st = $conn->prepare("UPDATE pratiche SET assegnata_a = ?, passo = ?, stato = ?, aggiornata_il = NOW() WHERE id = ?");
         $st->bind_param("iisi", $op_id, $passo, $stato, $id); $st->execute();
         // Chi l'ha avuta resta tra gli operatori della pratica: continua a vederla e a integrarla
-        $conn->query("INSERT INTO pratiche_operatori (pratica_id, operatore_id, passo) VALUES ($id, $op_id, $passo) ON DUPLICATE KEY UPDATE passo = VALUES(passo)");
-        if (!empty($p['assegnata_a'])) $conn->query("INSERT IGNORE INTO pratiche_operatori (pratica_id, operatore_id, passo) VALUES ($id, " . (int)$p['assegnata_a'] . ", " . (int)$p['passo'] . ")");
+        db_esegui($conn, "INSERT INTO pratiche_operatori (pratica_id, operatore_id, passo) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE passo = VALUES(passo)", [$id, (int)$op_id, (int)$passo]);
+        if (!empty($p['assegnata_a'])) db_esegui($conn, "INSERT IGNORE INTO pratiche_operatori (pratica_id, operatore_id, passo) VALUES (?, ?, ?)", [$id, (int)$p['assegnata_a'], (int)$p['passo']]);
         evento_pratica($conn, $id, 'passaggio', 'ufficio', $uid, $stato !== $p['stato'] ? $stato : null, 'In carico a: ' . passi_pratica($m)[$passo] . ' – ' . $o['nominativo'], null, null, false, $autore_nome);
         if (trim($nota) !== '') evento_pratica($conn, $id, 'messaggio', 'ufficio', $uid, null, mb_substr(trim($nota), 0, 3000), null, null, true, $autore_nome);
         $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
@@ -828,8 +825,7 @@ if (!function_exists('assegna_pratica')) {
 if (!function_exists('operatori_pratica')) {
     // Operatori che hanno avuto (o hanno) in carico la pratica: id
     function operatori_pratica($conn, int $id): array {
-        $r = @$conn->query("SELECT operatore_id FROM pratiche_operatori WHERE pratica_id = $id ORDER BY passo, dal");
-        return $r ? array_map('intval', array_column($r->fetch_all(MYSQLI_ASSOC), 'operatore_id')) : [];
+        return array_map('intval', array_column(db_righe($conn, "SELECT operatore_id FROM pratiche_operatori WHERE pratica_id = ? ORDER BY passo, dal", [$id]), 'operatore_id'));
     }
 }
 
@@ -861,7 +857,7 @@ if (!function_exists('autodichiarazione_pratica')) {
                . (trim($aggiunta) !== '' ? "\n" . mb_substr(trim($aggiunta), 0, 3000) : '')
                . "\nDichiarazione resa ai sensi degli artt. 46 e 47 del D.P.R. 445/2000, consapevole delle sanzioni penali previste dall'art. 76 per le dichiarazioni mendaci, il " . date('d/m/Y \a\l\l\e H:i') . ".";
         evento_pratica($conn, $id, 'autodich', 'studente', $uid, null, $testo);
-        $conn->query("UPDATE pratiche SET stato = 'in_lavorazione', richiesta_json = NULL WHERE id = $id");
+        db_esegui($conn, "UPDATE pratiche SET stato = 'in_lavorazione', richiesta_json = NULL WHERE id = ?", [$id]);
         evento_pratica($conn, $id, 'stato', 'studente', $uid, 'in_lavorazione', 'Autodichiarazione inviata');
         email_pratica($conn, $p, 'msg_studente', $testo);
         return null;
@@ -901,8 +897,7 @@ if (!function_exists('badge_stato_pratica')) {
 
 if (!function_exists('seduta_didattica')) {
     function seduta_didattica($conn, int $id): ?array {
-        $r = @$conn->query("SELECT * FROM didattica_sedute WHERE id = $id");
-        return $r ? ($r->fetch_assoc() ?: null) : null;
+        return db_riga($conn, "SELECT * FROM didattica_sedute WHERE id = ?", [$id]);
     }
     function etichetta_seduta(array $s): string {
         return ($s['data'] ? date('d/m/Y', strtotime($s['data'])) . ' – ' : '') . mb_strimwidth((string)$s['organo'], 0, 90, '…');
@@ -934,8 +929,7 @@ if (!function_exists('consigli_didattica')) {
         return $out;
     }
     function consiglio_didattica($conn, int $id): ?array {
-        $r = @$conn->query("SELECT * FROM didattica_consigli WHERE id = $id");
-        return $r ? ($r->fetch_assoc() ?: null) : null;
+        return db_riga($conn, "SELECT * FROM didattica_consigli WHERE id = ?", [$id]);
     }
     // Componenti (ordinati per qualifica come nel verbale) o referenti del consiglio
     function persone_consiglio($conn, int $cid, string $ruolo = 'componente'): array {
@@ -998,7 +992,7 @@ if (!function_exists('aggiungi_persona_consiglio')) {
             if (($pid && $x['persona_id'] === $pid) || (!$pid && mb_strtolower($x['nominativo']) === mb_strtolower($nominativo))) return $ruolo === 'referente' ? "È già referente di questo consiglio." : "È già tra i componenti.";
         }
         $qualifica = mb_substr(trim($qualifica), 0, 150);
-        $ordine = (int)($conn->query("SELECT COALESCE(MAX(ordine), 0) + 1 n FROM didattica_consigli_persone WHERE consiglio_id = $cid")->fetch_assoc()['n'] ?? 1);
+        $ordine = (int)(db_valore($conn, "SELECT COALESCE(MAX(ordine), 0) + 1 FROM didattica_consigli_persone WHERE consiglio_id = ?", [$cid]) ?? 1);
         $st = $conn->prepare("INSERT INTO didattica_consigli_persone (consiglio_id, ruolo, persona_id, email, nominativo, qualifica, ordine) VALUES (?, ?, ?, ?, ?, ?, ?)");
         $st->bind_param("isssssi", $cid, $ruolo, $pid, $email, $nominativo, $qualifica, $ordine);
         return $st->execute() ? null : "Salvataggio non riuscito.";
@@ -1009,8 +1003,7 @@ if (!function_exists('presenze_seduta')) {
     // Presenze della seduta: quelle salvate più i componenti del consiglio non ancora segnati (presenti). [componente_id => riga]
     function presenze_seduta($conn, array $s): array {
         $out = [];
-        $r = @$conn->query("SELECT * FROM didattica_sedute_presenze WHERE seduta_id = " . (int)$s['id'] . " ORDER BY ordine, nominativo");
-        while ($r && $x = $r->fetch_assoc()) $out[(int)$x['componente_id']] = $x + ['_salvata' => true];
+        foreach (db_righe($conn, "SELECT * FROM didattica_sedute_presenze WHERE seduta_id = ? ORDER BY ordine, nominativo", [(int)$s['id']]) as $x) $out[(int)$x['componente_id']] = $x + ['_salvata' => true];
         if (!empty($s['consiglio_id'])) {
             foreach (persone_consiglio($conn, (int)$s['consiglio_id']) as $i => $c) {
                 if (!isset($out[(int)$c['id']])) $out[(int)$c['id']] = ['seduta_id' => $s['id'], 'componente_id' => $c['id'], 'nominativo' => $c['nominativo'], 'qualifica' => $c['qualifica'], 'ordine' => 1000 + $i, 'stato' => 'P', '_salvata' => false];
@@ -1177,15 +1170,16 @@ if (!function_exists('applica_esiti_seduta')) {
     function applica_esiti_seduta($conn, array $s, int $uid, string $autore_nome = ''): array {
         $n = [0, 0, 0];
         $quando = ($s['data'] ? ' del ' . date('d/m/Y', strtotime($s['data'])) : '');
-        $r = $conn->query("SELECT id, stato, esito_seduta FROM pratiche WHERE seduta_id = " . (int)$s['id'] . " AND esito_seduta <> ''");
-        foreach ($r ? $r->fetch_all(MYSQLI_ASSOC) : [] as $x) {
+        foreach (db_righe($conn, "SELECT id, stato, esito_seduta FROM pratiche WHERE seduta_id = ? AND esito_seduta <> ''", [(int)$s['id']]) as $x) {
             $id = (int)$x['id'];
+            // L'estratto del verbale (delibera e quadro delle decisioni) va nella pratica prima dell'email dell'esito
+            $estratto = fn() => function_exists('allega_estratto_pratica') && allega_estratto_pratica($conn, $s, $id, $uid, $autore_nome) ? " Nella pratica trovi l'estratto del verbale in PDF." : '';
             if (in_array($x['esito_seduta'], ['approvata', 'approvata_mod'], true) && !in_array($x['stato'], ['accolta', 'chiusa'], true)) {
-                cambia_stato_pratica($conn, $id, 'accolta', 'Approvata dal Consiglio nella seduta' . $quando . '.', $uid, $autore_nome); $n[0]++;
+                cambia_stato_pratica($conn, $id, 'accolta', 'Approvata dal Consiglio nella seduta' . $quando . '.' . $estratto(), $uid, $autore_nome); $n[0]++;
             } elseif ($x['esito_seduta'] === 'respinta' && $x['stato'] !== 'respinta') {
-                cambia_stato_pratica($conn, $id, 'respinta', 'Non approvata dal Consiglio nella seduta' . $quando . '.', $uid, $autore_nome); $n[1]++;
+                cambia_stato_pratica($conn, $id, 'respinta', 'Non approvata dal Consiglio nella seduta' . $quando . '.' . $estratto(), $uid, $autore_nome); $n[1]++;
             } elseif ($x['esito_seduta'] === 'rinviata') {
-                $conn->query("UPDATE pratiche SET seduta_id = NULL, esito_seduta = '' WHERE id = $id");
+                db_esegui($conn, "UPDATE pratiche SET seduta_id = NULL, esito_seduta = '' WHERE id = ?", [$id]);
                 evento_pratica($conn, $id, 'messaggio', 'ufficio', $uid, null, 'Rinviata dal Consiglio nella seduta' . $quando . ': sarà esaminata nella prossima seduta.', null, null, false, $autore_nome); $n[2]++;
             }
         }
@@ -1335,7 +1329,7 @@ if (!function_exists('genera_verbale_pratiche')) {
             $x .= docx_p($quando . ' alle ore ' . ($s['ora_inizio'] ?: '____') . ', a seguito di convocazione si è riunito' . ($s['luogo'] !== '' ? ' presso ' . $s['luogo'] : '') . ', il ' . $s['organo'] . ', con il seguente o.d.g.:', ['al' => 'both']);
             foreach ($odg as $i => $t) $x .= docx_p(($i + 1) . ". " . $t, ['rientro' => 720, 'sporgente' => 360, 'dopo' => 0]);
             $x .= docx_p('', ['dopo' => 120]);
-            $pres = !empty($s['id']) ? array_filter(presenze_seduta($conn, $s), fn($r) => !empty($r['_salvata'])) : [];
+            $pres = presenze_registrate($conn, $s);
             if ($pres) {
                 // Presenze registrate per componente: gruppi per qualifica, PRESENTE / ASSENTE GIUSTIFICATO / ASSENTE INGIUSTIFICATO
                 $g_corr = null;
@@ -1444,7 +1438,7 @@ if (!function_exists('promemoria_pratiche_ferme')) {
                     . ($o ? " ed è in carico a te." : " e non è ancora stata smistata.") . "</p><p style='margin-top:18px;'><a href='" . $h(url_base_sito() . '/admin/didattica.php?tab=pratiche&id=' . (int)$p['id']) . "' style='background:#047857;color:#fff;padding:10px 18px;text-decoration:none;border-radius:6px;font-weight:bold;'>Apri la pratica</a></p>", $conn, '#047857');
                 $n++;
             }
-            $conn->query("UPDATE pratiche SET promemoria_il = NOW() WHERE id = " . (int)$p['id']);
+            db_esegui($conn, "UPDATE pratiche SET promemoria_il = NOW() WHERE id = ?", [(int)$p['id']]);
         }
         return $n;
     }
@@ -1472,7 +1466,7 @@ if (!function_exists('statistiche_pratiche')) {
             $conta($per_mod, $p['modulo_titolo']);
             $conta($per_corso, $corso);
             // Tempi: eventi della pratica in ordine
-            $ev = $conn->query("SELECT tipo, stato, testo, creato_il FROM pratiche_eventi WHERE pratica_id = " . (int)$p['id'] . " ORDER BY creato_il, id")->fetch_all(MYSQLI_ASSOC);
+            $ev = db_righe($conn, "SELECT tipo, stato, testo, creato_il FROM pratiche_eventi WHERE pratica_id = ? ORDER BY creato_il, id", [(int)$p['id']]);
             $inizio = strtotime($p['creata_il']); $passo_corr = 'Smistamento'; $t_corr = $inizio; $fine = null;
             foreach ($ev as $e) {
                 $t = strtotime($e['creato_il']);

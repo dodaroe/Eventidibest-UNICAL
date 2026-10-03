@@ -8,7 +8,7 @@
 // richiesta: quando aggiungi qualcosa qui, cambia anche il nome del marcatore.
 if (!function_exists('assicura_schema')) {
     function assicura_schema($conn) {
-        $marker = RADICE_SITO . '/cache/schema_v38.ok';
+        $marker = RADICE_SITO . '/cache/schema_v39.ok';
         if (is_file($marker)) return;
 
         // 1. Tabelle di servizio (prima create dalle singole pagine a ogni richiesta)
@@ -231,6 +231,18 @@ if (!function_exists('assicura_schema')) {
                 id INT AUTO_INCREMENT PRIMARY KEY, incarico_id INT NOT NULL, tipo VARCHAR(20) NOT NULL DEFAULT '', testo TEXT DEFAULT NULL, autore VARCHAR(200) DEFAULT '',
                 ip VARCHAR(45) DEFAULT '', creato_il DATETIME DEFAULT CURRENT_TIMESTAMP, INDEX idx_incarico (incarico_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            // v39: registro delle attività del tutor (ore svolte, approvate dal docente responsabile)
+            'tutorato_registro' => "CREATE TABLE IF NOT EXISTS tutorato_registro (
+                id INT AUTO_INCREMENT PRIMARY KEY, incarico_id INT NOT NULL, data DATE NOT NULL, ore DECIMAL(5,1) NOT NULL DEFAULT 0, attivita TEXT DEFAULT NULL,
+                stato VARCHAR(12) NOT NULL DEFAULT 'inviata', nota_docente VARCHAR(500) DEFAULT '', creata_il DATETIME DEFAULT CURRENT_TIMESTAMP, decisa_il DATETIME DEFAULT NULL,
+                INDEX idx_incarico (incarico_id, data)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            // v39: convocazioni delle sedute inviate ai componenti, con il link personale per giustificare l'assenza
+            'didattica_convocazioni' => "CREATE TABLE IF NOT EXISTS didattica_convocazioni (
+                id INT AUTO_INCREMENT PRIMARY KEY, seduta_id INT NOT NULL, componente_id INT NOT NULL, email VARCHAR(150) DEFAULT '', token VARCHAR(40) NOT NULL,
+                inviata_il DATETIME DEFAULT NULL, giustificata_il DATETIME DEFAULT NULL, motivo VARCHAR(500) DEFAULT '',
+                UNIQUE KEY uq_token (token), UNIQUE KEY uq_seduta_comp (seduta_id, componente_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             'abilitazioni_ambito' => "CREATE TABLE IF NOT EXISTS abilitazioni_ambito (
                 id INT AUTO_INCREMENT PRIMARY KEY, utente_id INT NOT NULL, tipo VARCHAR(20) NOT NULL, pagina_id INT NOT NULL DEFAULT 0,
                 creata_da INT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -296,6 +308,40 @@ if (!function_exists('assicura_schema')) {
             'didattica_sedute' => [
                 // v38: consiglio (organo) della seduta, con i suoi componenti e i referenti
                 'consiglio_id' => "ADD COLUMN consiglio_id INT DEFAULT NULL, ADD INDEX idx_consiglio (consiglio_id)",
+                // v39: convocazione per email (testo personalizzato), verbale firmato in PAdES da segretario e coordinatore
+                'convocazione_oggetto'  => "ADD COLUMN convocazione_oggetto VARCHAR(255) DEFAULT ''",
+                'convocazione_testo'    => "ADD COLUMN convocazione_testo TEXT DEFAULT NULL",
+                'convocazione_il'       => "ADD COLUMN convocazione_il DATETIME DEFAULT NULL",
+                'segretario_email'      => "ADD COLUMN segretario_email VARCHAR(150) DEFAULT ''",
+                'coordinatore_email'    => "ADD COLUMN coordinatore_email VARCHAR(150) DEFAULT ''",
+                'verbale_pdf'           => "ADD COLUMN verbale_pdf VARCHAR(255) DEFAULT NULL",
+                'verbale_stato'         => "ADD COLUMN verbale_stato VARCHAR(20) NOT NULL DEFAULT ''",
+                'verbale_token'         => "ADD COLUMN verbale_token VARCHAR(40) DEFAULT NULL",
+                'verbale_inviato_il'    => "ADD COLUMN verbale_inviato_il DATETIME DEFAULT NULL",
+                'verbale_firmato_il'    => "ADD COLUMN verbale_firmato_il DATETIME DEFAULT NULL",
+                'verbale_sollecito_il'  => "ADD COLUMN verbale_sollecito_il DATETIME DEFAULT NULL",
+                'verbale_solleciti'     => "ADD COLUMN verbale_solleciti TINYINT NOT NULL DEFAULT 0",
+            ],
+            'tutorato_incarichi' => [
+                // v39: dati della dichiarazione di fine attività (insegnamento e corso del docente), periodo per i promemoria,
+                // fine attività (richiesta del tutor, PDF da firmare dal docente, firma, protocollo) e solleciti
+                'insegnamento_docente' => "ADD COLUMN insegnamento_docente VARCHAR(255) DEFAULT ''",
+                'corso_laurea'         => "ADD COLUMN corso_laurea VARCHAR(255) DEFAULT ''",
+                'data_inizio'          => "ADD COLUMN data_inizio DATE DEFAULT NULL",
+                'data_fine'            => "ADD COLUMN data_fine DATE DEFAULT NULL",
+                'fine_stato'           => "ADD COLUMN fine_stato VARCHAR(20) NOT NULL DEFAULT ''",
+                'fine_pdf'             => "ADD COLUMN fine_pdf VARCHAR(255) DEFAULT NULL",
+                'token_fine'           => "ADD COLUMN token_fine VARCHAR(40) DEFAULT NULL",
+                'fine_richiesta_il'    => "ADD COLUMN fine_richiesta_il DATETIME DEFAULT NULL",
+                'fine_firmata_il'      => "ADD COLUMN fine_firmata_il DATETIME DEFAULT NULL",
+                'fine_protocollo'      => "ADD COLUMN fine_protocollo VARCHAR(100) NOT NULL DEFAULT ''",
+                'ore_approvate'        => "ADD COLUMN ore_approvate DECIMAL(6,1) DEFAULT NULL",
+                'sollecito_il'         => "ADD COLUMN sollecito_il DATETIME DEFAULT NULL",
+                'solleciti'            => "ADD COLUMN solleciti TINYINT NOT NULL DEFAULT 0",
+                'promemoria_tutor_il'  => "ADD COLUMN promemoria_tutor_il DATETIME DEFAULT NULL",
+                'promemoria_docente_il' => "ADD COLUMN promemoria_docente_il DATETIME DEFAULT NULL",
+                'anonimizzata'         => "ADD COLUMN anonimizzata TINYINT(1) NOT NULL DEFAULT 0",
+                'docente_titolo'       => "ADD COLUMN docente_titolo VARCHAR(10) NOT NULL DEFAULT 'Prof.'",
             ],
             'insegnamenti' => [
                 // v38: crediti dell'insegnamento (proposti nelle convalide in seduta)

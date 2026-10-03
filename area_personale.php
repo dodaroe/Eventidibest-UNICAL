@@ -774,6 +774,23 @@ require_once 'header.php';
         </a>
     <?php endif; ?>
 
+    <?php
+    // Tutorato: registro delle attività per il tutor (lettera firmata) e per il docente responsabile
+    $reg_tut = function_exists('incarichi_registro') ? incarichi_registro($conn, $user_info ?? null) : [];
+    if ($reg_tut):
+        $da_fare = count(array_filter($reg_tut, fn($i) => $i['_ruolo'] === 'docente' && ($i['fine_stato'] === 'richiesta' || (int)db_valore($conn, "SELECT COUNT(*) FROM tutorato_registro WHERE incarico_id = ? AND stato = 'inviata'", [(int)$i['id']]) > 0))); ?>
+        <a href="registro_tutorato.php" class="card border-0 shadow-sm mb-4 text-decoration-none" style="border-radius: 12px; border-left: 5px solid #0f766e !important;">
+            <div class="card-body d-flex align-items-center gap-3 flex-wrap">
+                <i class="fa fa-clipboard-list fs-3" style="color:#0f766e;" aria-hidden="true"></i>
+                <div class="flex-grow-1">
+                    <div class="fw-bold text-dark">Registro delle attività di tutorato</div>
+                    <div class="small text-secondary"><?php echo count($reg_tut); ?> incarichi<?php echo $da_fare ? ' · <strong class="text-danger">' . $da_fare . ' da controllare</strong>' : ''; ?></div>
+                </div>
+                <span class="btn btn-sm fw-bold text-white" style="background:#0f766e;">Apri</span>
+            </div>
+        </a>
+    <?php endif; ?>
+
     <!-- MENU A TAB (RESTYLING COLORI) -->
     <ul class="nav nav-pills nav-fill gap-2 p-1 bg-light rounded-pill border mb-4 shadow-sm custom-tabs" id="pills-tab" role="tablist">
         <li class="nav-item" role="presentation">

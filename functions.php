@@ -7,7 +7,7 @@ if (session_status() === PHP_SESSION_NONE) { session_start(); }
 if (!defined('RADICE_SITO')) define('RADICE_SITO', __DIR__);
 
 // Le funzioni sono divise per argomento in inc/: l'ordine conta (costanti e codice eseguito al caricamento)
-foreach (['base', 'sezioni', 'aspetto', 'liste_attesa', 'sistema', 'dati', 'eventi_progetti', 'anagrafi', 'fsl', 'prenotazioni', 'attestati', 'risorse', 'calendario_risorse', 'esporta', 'didattica', 'catalogo_ateneo', 'pdf', 'tutorato', 'schema'] as $__inc) {
+foreach (['base', 'sezioni', 'aspetto', 'liste_attesa', 'sistema', 'dati', 'eventi_progetti', 'anagrafi', 'fsl', 'prenotazioni', 'attestati', 'risorse', 'calendario_risorse', 'esporta', 'didattica', 'catalogo_ateneo', 'pdf', 'tutorato', 'tutorato_registro', 'sedute', 'schema'] as $__inc) {
     require_once __DIR__ . '/inc/' . $__inc . '.php';
 }
 unset($__inc);
