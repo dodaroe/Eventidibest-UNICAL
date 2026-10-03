@@ -426,6 +426,7 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
         <?php if ($solo_ref && $k !== 'sedute') continue; ?>
         <li class="nav-item"><a class="nav-link fw-bold<?php echo $tab === $k ? ' active' : ' bg-light text-dark'; ?>" href="<?php echo $base; ?>&amp;tab=<?php echo $k; ?>"><i class="fa <?php echo $ico; ?> me-1" aria-hidden="true"></i><?php echo $txt; ?></a></li>
     <?php endforeach; ?>
+    <?php if ($puo_tutorato): ?><li class="nav-item"><a class="nav-link fw-bold bg-light text-dark" href="tutorato.php?p_id=<?php echo (int)$filtro_p; ?>"><i class="fa fa-user-graduate me-1" aria-hidden="true"></i>Tutorato · lettere di incarico</a></li><?php endif; ?>
 </ul>
 
 <?php if ($tab === 'pratiche'):
