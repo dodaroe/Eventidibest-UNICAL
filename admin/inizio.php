@@ -14,7 +14,14 @@ if ($sez_sel === null && count($moduli_utente) === 1) $sez_sel = $moduli_utente[
 $funzioni_modulo = [
     'orientamento' => $puo_fsl_convenzioni ? [[$puo_fsl ? 'Formazione Scuola Lavoro' : 'Convenzioni FSL', 'Sottomodulo: convenzioni con le scuole, verifica delle iscrizioni, riepilogo per anno e valutazioni', 'fa-briefcase', 'fsl.php']] : [],
     'calendari'    => [],
-    'didattica'    => $puo_didattica ? [['Pratiche degli studenti', 'Moduli online, pratiche con stato, istruttoria e messaggi', 'fa-inbox', 'didattica.php?tab=pratiche'], ['Sedute e verbali', 'Sedute del Consiglio, verbale in Word ed Excel delle pratiche', 'fa-gavel', 'didattica.php?tab=sedute'], ['Moduli e documenti', 'Modulistica: documenti da scaricare e moduli online guidati', 'fa-file-lines', 'didattica.php?tab=moduli'], ['Ufficio e ricevimento', 'Operatori dell’Ufficio didattico e sportello di ricevimento', 'fa-people-group', 'didattica.php?tab=ufficio']] : [],
+    // Referenti dei consigli: solo le sedute; Tutorato a chi ha il compito «Bandi» (o gestisce tutta la Didattica)
+    'didattica'    => $puo_didattica ? array_values(array_filter([
+        $puo_didattica_tutto ? ['Pratiche degli studenti', 'Moduli online, pratiche con stato, istruttoria e messaggi', 'fa-inbox', 'didattica.php?tab=pratiche'] : null,
+        ['Sedute e verbali', 'Consigli dei corsi di studio, presenze, convalide e piani di studio, verbale in Word ed Excel', 'fa-gavel', 'didattica.php?tab=sedute'],
+        $puo_didattica_tutto ? ['Moduli e documenti', 'Modulistica: documenti da scaricare e moduli online guidati', 'fa-file-lines', 'didattica.php?tab=moduli'] : null,
+        $puo_didattica_tutto ? ['Ufficio e ricevimento', 'Operatori dell’Ufficio didattico e sportello di ricevimento', 'fa-people-group', 'didattica.php?tab=ufficio'] : null,
+        $puo_tutorato ? ['Tutorato · lettere di incarico', 'Bandi e lettere dei vincitori: conferma con SPID/CIE, firme PAdES del docente e del direttore, protocollo', 'fa-user-graduate', 'tutorato.php'] : null,
+    ])) : [],
     'portale'      => array_values(array_filter([
         $is_full_admin ? ['Anagrafi', 'Docenti, personale TA, insegnamenti, corsi di studio e strutture dal portale di Ateneo', 'fa-address-book', 'anagrafe_docenti.php'] : null,
         $puo_fsl_scuole ? ['Anagrafe scuole', 'Scuole del Ministero, abbinamento delle scuole scritte a mano, scuole collegate', 'fa-building-columns', 'scuole.php'] : null,
