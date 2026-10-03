@@ -22,6 +22,12 @@ Ogni area ha un **tipo** (`pagine_eventi.tipo_area`: fsl, eventi, gruppi, calend
 
 - **Ingresso nel pannello per macroarea**: chi gestisce più aree sceglie prima la sezione (Orientamento, Didattica, Calendari e risorse) e poi l'area, con card che riassumono i numeri di ciascuna (`admin/inizio.php`); "Cambia" riporta alla sezione dell'area corrente
 - **Calendari e risorse** (aree di tipo `calendario`): aule, laboratori e sportelli con orari settimanali (fino a due fasce al giorno), slot di durata scelta, più slot di seguito, preavviso minimo e giorni prenotabili, chi può prenotare (tutti, studenti, docenti, personale), approvazione facoltativa dei gestori, ripetizione settimanale (le settimane non disponibili vengono saltate e segnalate) e chiusure della risorsa o di tutta l'area. Pagina pubblica con la settimana degli slot liberi, controllo delle sovrapposizioni (anche con richieste contemporanee), email di conferma, approvazione, rifiuto, annullamento e promemoria del giorno prima, file .ics, prenotazioni nell'Area personale con annullamento; nel pannello agenda di oggi, prenotazioni con filtri, approvazione anche di tutta la serie ed export CSV (`admin/risorse.php`, `admin/prenotazioni_risorse.php`)
+- **Didattica – Sedute dei consigli dei corsi di studio** (`admin/didattica.php?tab=sedute`): i 5 consigli del Dipartimento sono già inseriti; l'Ufficio didattico sceglie uno o più **referenti** per consiglio (entrano nel pannello e vedono solo le sedute del loro consiglio), i referenti inseriscono **una volta sola i componenti** (docenti dall'anagrafe, rappresentanti a mano) con il gruppo del verbale; in ogni seduta si segna **presente / assente giustificato / assente ingiustificato**. Per ogni pratica in seduta: **esito** (approvata, con modifiche, respinta, rinviata), **convalide** (insegnamento indicato dallo studente → insegnamento del Dipartimento dall'anagrafe, convalida totale o parziale con CFU riconosciuti e da integrare calcolati) o **piano di studi** (in piano / fuori piano), delibera. Tutto finisce nel verbale Word (presenze per gruppo con il riepilogo, quadro delle convalide) e nell'Excel; «Applica gli esiti» chiude le pratiche e avvisa gli studenti
+- **Didattica – Moduli online avanzati**: tipi di campo raggruppati (anche ora, URL, codice fiscale, scelta multipla, dichiarazione da accettare, titoli e testi informativi), **tabelle con colonne tipizzate** (insegnamento dal catalogo di Ateneo, CFU, voto, S.S.D., data, tendina…) definite dal costruttore, **logica condizionale** («mostra solo se» un'altra risposta è uguale / diversa / contiene / compilata / vuota) e **valori automatici** («compila se…»), ripetute dal server; modelli pronti anche per convalida di esami e piano di studi
+- **Catalogo degli insegnamenti di Ateneo**: i corsi di studio di tutti i dipartimenti si aggiornano con l'anagrafe; lo studente sceglie **tipo di corso → corso di studio → anno accademico di offerta → insegnamento** (scaricato dalle API la prima volta e tenuto 30 giorni), CFU e S.S.D. si compilano da soli, oppure lo scrive a mano (`cerca_insegnamenti.php`, `assets/js/campi-pratica.js`)
+- **Didattica – Iter**: chi ha avuto in carico la pratica nei passi precedenti continua a vederla (filtro «Passate ad altri uffici») e la integra; chi l'ha in carico può chiedergli un'integrazione; lo studente può sempre aggiungere documenti. Le email partono **solo ai passaggi**: all'operatore che riceve la pratica e allo studente («passata a…»), per le richieste di integrazione e per gli esiti; niente email per note interne e cambi di stato intermedi
+- **Tutorato – Lettere di incarico** (`admin/tutorato.php`): bando con decreto del bando e della commissione e direttore dall'anagrafe; per ogni vincitore dati anagrafici, attività, ore, periodo, compenso e docente responsabile (dall'anagrafe o a mano). Word precompilato dal modello del Dipartimento e PDF della lettera. Iter: email allo studente → **conferma con SPID o CIE** (`incarico.php`: solo il titolare del codice fiscale; nel PDF metodo, livello, identity provider, spidCode, data e ora, impronta SHA-256) → **firma PAdES del docente** → **firma PAdES del direttore** (`firma_incarico.php`: firma remota Aruba dal portale oppure caricamento del PDF firmato) → email all'operatore che scarica il PDF con tutte le firme e registra il protocollo (copia allo studente). Accettati solo PDF PAdES che contengono la lettera senza modifiche, con la firma integra e, se noto, il codice fiscale del firmatario; i .p7m (CAdES) sono rifiutati
+- **Solo PAdES** anche per le convenzioni FSL: istruzioni alla scuola e registro accettano solo PDF firmati in PAdES
 - **Gestione eventi multi-area** con sezioni (Pagine) personalizzabili per colori, layout e accessi
 - **8 layout di pagina**: griglia per sezioni, lista cronologica, elenco avanzato con ricerca, calendario, timeline, agenda a schede per giorno, gruppi/corsi, progetti — tutti gestiscono anche i turni senza data fissa
 - **Progetti** (es. Formazione Scuola Lavoro), **dedicati alle scuole o generici**: maschera dedicata con corso di laurea, periodo o "date da definire", requisiti di accesso, ore, articolazione in moduli/fasi/incontri, obiettivi, conoscenze e competenze, referenti con pagina personale; scheda pubblica di ogni progetto con link condivisibile; **edizioni** (repliche) con lista d'attesa in ordine di arrivo — per le scuole una scuola per edizione e numero di studenti controllato, altrimenti posti per edizione; iscrizione con SSO, SPID o CIE
@@ -166,6 +172,10 @@ Prima di ogni caricamento: `/c/xampp/php/php.exe -d extension=zip strumenti/prov
 
 Il codice non dipende dal nome della cartella. Per passare da `/eventi` a `/didattica` sul server: `sudo bash /opt/lampp/htdocs/eventi/strumenti/migra_a_didattica.sh` (sposta la cartella, crea in `/eventi` un rimando permanente pagina per pagina, imposta `URL_SITO` nel `.env`); poi aggiornare il crontab come indicato dallo script. `--annulla` torna a `/eventi`.
 
+### Tutorato: firma remota Aruba e SPID/CIE
+
+Nel `.env`: `INCARICHI_SOLO_SPID_CIE=1` (lo studente conferma solo se è entrato con SPID o CIE; il metodo si legge dagli attributi e dal contesto di autenticazione SAML in `metadati_accesso_saml()`), `ARUBA_ARSS_URL`, `ARUBA_ARSS_DOMINIO` e `ARUBA_ARSS_CERTID` per la firma remota Aruba (ArubaSignService, `pdfsignatureV2` con profilo PADESBES). Senza `ARUBA_ARSS_URL` docente e direttore scaricano il PDF, lo firmano in PAdES e lo caricano. I PDF stanno in `uploads/incarichi/` (bloccata al web); il modello Word è `modelli_documenti/lettera_incarico_tutorato.docx`.
+
 ### Anagrafe degli insegnamenti
 
 Con l'aggiornamento settimanale dell'anagrafe arrivano anche gli insegnamenti dei corsi del proprio dipartimento (la prima struttura) dalle API `activities` del portale di Ateneo. Nelle API `academic_year` è la coorte: l'anno in cui l'insegnamento si tiene è coorte + anno di corso − 1. Si conservano l'anno accademico in corso e il successivo (Anagrafi → Insegnamenti).
@@ -202,6 +212,8 @@ eventidibest-cms/
 │   ├── nuova_area.php          # Creazione di un'area (nasce nascosta, voce di menu nascosta)
 │   ├── risorse.php             # Calendari e risorse: risorse, orari settimanali e chiusure
 │   ├── prenotazioni_risorse.php # Calendari e risorse: agenda, prenotazioni, approvazioni, CSV (dashboard dell'area)
+│   ├── didattica.php           # Didattica: pratiche, sedute e consigli (presenze, convalide, verbale), moduli, ufficio, statistiche
+│   ├── tutorato.php            # Tutorato: bandi e lettere di incarico (iter SPID/CIE → PAdES docente → PAdES direttore → protocollo)
 │   ├── utenti.php              # Utenti, gruppi e abilitazioni, con riepilogo per area
 │   ├── scuole.php              # Anagrafe scuole: caricamento del file del Ministero e abbinamento dello storico, scuole collegate con i docenti (le convenzioni sono in fsl.php)
 │   ├── convenzione_file.php    # Scarica la convenzione o l'Allegato A firmati (solo amministratori; i file sono bloccati al web)
@@ -250,6 +262,9 @@ eventidibest-cms/
 ├── calendario_area.php # Pagina pubblica delle aree Calendari e risorse (incluso da master_template.php)
 ├── risorsa_ics.php     # File .ics di una prenotazione di aula, laboratorio o sportello
 ├── persona.php         # Pagina pubblica di un referente scelto dall'anagrafe di Ateneo
+├── incarico.php        # Lettera di incarico: controllo e conferma dello studente con SPID/CIE (link personale)
+├── firma_incarico.php  # Lettera di incarico: firma PAdES del docente e del direttore (Aruba o PDF firmato)
+├── cerca_insegnamenti.php # Catalogo di Ateneo per i campi Insegnamento dei moduli (JSON)
 ├── profilo.php         # Profilo utente: dati SSO e modifica email
 ├── sw.js               # Service Worker (PWA)
 └── manifest.json       # Web App Manifest (PWA)
@@ -295,6 +310,10 @@ Il database e` composto da **23 tabelle**:
 | `slide_home` | Immagini del carosello della home |
 | `log_accessi` | Registro degli accessi SSO |
 | `log_email` | Registro degli invii email (accettate / rifiutate dal server SMTP) |
+| `didattica_consigli`, `didattica_consigli_persone`, `didattica_sedute_presenze` | Consigli dei corsi di studio con referenti e componenti; presenze di ogni seduta |
+| `pratiche_operatori` | Operatori che hanno avuto in carico una pratica (la vedono e la integrano anche dopo il passaggio) |
+| `ateneo_cds`, `ateneo_insegnamenti`, `ateneo_insegnamenti_scaricati` | Catalogo di Ateneo: corsi di studio per anno di offerta e insegnamenti scaricati quando servono |
+| `tutorato_bandi`, `tutorato_incarichi`, `tutorato_eventi` | Bandi di tutorato, lettere di incarico (dati, stato, conferma SPID/CIE, PDF, protocollo) e loro storico |
 
 ---
 

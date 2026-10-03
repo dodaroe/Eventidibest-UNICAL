@@ -17,11 +17,33 @@ if (!defined('STATI_PRATICA')) define('STATI_PRATICA', [
     'chiusa'         => ['Chiusa', '#475569', 'fa-box-archive'],
 ]);
 if (!defined('TIPI_CAMPO_PRATICA')) define('TIPI_CAMPO_PRATICA', [
-    'text' => 'Testo breve', 'textarea' => 'Testo lungo', 'email' => 'Email', 'tel' => 'Telefono', 'number' => 'Numero', 'date' => 'Data',
-    'select' => 'Tendina', 'radio' => 'Scelta singola', 'checkbox' => 'Casella (sì/no)', 'file' => 'Allegato (PDF o immagine)',
-    'corso_studio' => 'Corso di studio (anagrafe)', 'insegnamento' => 'Insegnamento (anagrafe)', 'docente' => 'Docente (anagrafe)',
-    'anno_accademico' => 'Anno accademico', 'tabella' => 'Tabella a righe (es. esami)',
+    'text' => 'Testo breve', 'textarea' => 'Testo lungo', 'email' => 'Email', 'tel' => 'Telefono', 'number' => 'Numero', 'date' => 'Data', 'time' => 'Ora',
+    'url' => 'Indirizzo web', 'codice_fiscale' => 'Codice fiscale',
+    'select' => 'Tendina', 'radio' => 'Scelta singola', 'multicheck' => 'Scelta multipla (caselle)', 'checkbox' => 'Casella (sì/no)', 'dichiarazione' => 'Dichiarazione da accettare',
+    'file' => 'Allegato (PDF o immagine)',
+    'corso_studio' => 'Corso di studio (anagrafe)', 'insegnamento' => 'Insegnamento del Dipartimento (anagrafe)', 'insegnamento_ateneo' => 'Insegnamento di Ateneo (tipo, corso, a.a. di offerta)',
+    'docente' => 'Docente (anagrafe)', 'anno_accademico' => 'Anno accademico', 'tabella' => 'Tabella a righe (es. esami)',
+    'titolo' => 'Titolo di sezione (solo testo)', 'info' => 'Testo informativo (solo testo)',
 ]);
+// Gruppi dei tipi nel costruttore dei moduli
+if (!defined('GRUPPI_TIPI_CAMPO')) define('GRUPPI_TIPI_CAMPO', [
+    'Campi di base' => ['text', 'textarea', 'email', 'tel', 'number', 'date', 'time', 'url', 'codice_fiscale', 'file'],
+    'Scelte' => ['select', 'radio', 'multicheck', 'checkbox', 'dichiarazione'],
+    'Dalle anagrafi' => ['corso_studio', 'insegnamento', 'insegnamento_ateneo', 'docente', 'anno_accademico'],
+    'Tabelle' => ['tabella'],
+    'Impaginazione' => ['titolo', 'info'],
+]);
+// Tipi delle colonne delle tabelle a righe ("Nome:tipo" nelle opzioni; senza tipo si riconosce dal nome)
+if (!defined('TIPI_COLONNA_TABELLA')) define('TIPI_COLONNA_TABELLA', [
+    'testo' => 'Testo', 'insegnamento' => 'Insegnamento (catalogo di Ateneo)', 'insegnamento_dip' => 'Insegnamento del Dipartimento', 'cfu' => 'CFU',
+    'voto' => 'Voto', 'ssd' => 'S.S.D.', 'data' => 'Data', 'numero' => 'Numero', 'docente' => 'Docente (anagrafe)', 'anno_accademico' => 'Anno accademico', 'scelta' => 'Tendina',
+]);
+// Condizioni della logica dei campi: "mostra solo se" e "compila in automatico se"
+if (!defined('OPERATORI_CONDIZIONE')) define('OPERATORI_CONDIZIONE', [
+    'uguale' => 'è uguale a', 'diverso' => 'è diverso da', 'contiene' => 'contiene', 'compilato' => 'è compilato', 'vuoto' => 'è vuoto',
+]);
+// Tipi che non chiedono nulla (solo testo nel modulo)
+if (!defined('TIPI_SOLO_TESTO')) define('TIPI_SOLO_TESTO', ['titolo', 'info']);
 if (!defined('DESTINATARI_MODULO')) define('DESTINATARI_MODULO', [
     'tutti' => 'Chiunque abbia fatto l\'accesso', 'studenti' => 'Studenti', 'docenti' => 'Docenti', 'personale' => 'Docenti e personale di Ateneo',
 ]);
@@ -180,25 +202,99 @@ if (!function_exists('crea_sportello_ufficio')) {
 // ==============================================================================
 
 if (!function_exists('campi_modulo')) {
-    // Campi del modulo online, normalizzati: [['nome', 'etichetta', 'tipo', 'opzioni' => [...], 'obbligatorio', 'aiuto', 'ufficio'], ...]
-    // 'ufficio' = lo compila l'ufficio nell'istruttoria (non compare allo studente). Per 'tabella' le opzioni sono le colonne.
+    // Campi del modulo online, normalizzati: [['nome', 'etichetta', 'tipo', 'opzioni' => [...], 'obbligatorio', 'aiuto', 'ufficio',
+    // 'colonne' => [['nome', 'tipo', 'scelte']] (tabelle), 'cond' => [campo, nome, op, valore] | null, 'auto' => [campo, nome, op, valore, imposta] | null], ...]
+    // 'ufficio' = lo compila l'ufficio nell'istruttoria (non compare allo studente). Per 'tabella' le opzioni sono i nomi delle colonne
+    // (scritte "Nome:tipo", es. "Insegnamento:insegnamento, CFU:cfu, Voto:voto"). 'cond' = il campo si mostra solo se la condizione
+    // sull'altro campo è vera; 'auto' = se la condizione è vera il campo si compila da solo con 'imposta'.
     function campi_modulo(?string $json): array {
         $out = [];
-        foreach (json_decode((string)$json, true) ?: [] as $i => $c) {
+        $grezzi = json_decode((string)$json, true) ?: [];
+        foreach ($grezzi as $i => $c) {
             $tipo = isset(TIPI_CAMPO_PRATICA[$c['tipo'] ?? '']) ? $c['tipo'] : 'text';
             $et = mb_substr(trim((string)($c['etichetta'] ?? '')), 0, 200);
             if ($et === '') continue;
-            $out[] = ['nome' => 'c' . ($i + 1), 'etichetta' => $et, 'tipo' => $tipo, 'obbligatorio' => !empty($c['obbligatorio']),
-                      'opzioni' => array_values(array_filter(array_map('trim', is_array($c['opzioni'] ?? null) ? $c['opzioni'] : preg_split('/[,;\n]/', (string)($c['opzioni'] ?? ''))), 'strlen')),
-                      'aiuto' => mb_substr(trim((string)($c['aiuto'] ?? '')), 0, 300), 'ufficio' => !empty($c['ufficio'])];
+            $opz_raw = is_array($c['opzioni'] ?? null) ? $c['opzioni'] : preg_split('/[,;\n]/', (string)($c['opzioni'] ?? ''));
+            $opz = array_values(array_filter(array_map('trim', $opz_raw), 'strlen'));
+            $x = ['nome' => 'c' . ($i + 1), 'etichetta' => $et, 'tipo' => $tipo, 'obbligatorio' => !empty($c['obbligatorio']) && !in_array($tipo, TIPI_SOLO_TESTO, true),
+                  'opzioni' => $opz, 'aiuto' => mb_substr(trim((string)($c['aiuto'] ?? '')), 0, $tipo === 'info' || $tipo === 'dichiarazione' ? 3000 : 300), 'ufficio' => !empty($c['ufficio']),
+                  'colonne' => [], 'cond' => null, 'auto' => null];
+            if ($tipo === 'tabella') {
+                $x['colonne'] = colonne_tabella($opz ?: ['Descrizione']);
+                $x['opzioni'] = array_column($x['colonne'], 'nome');
+            }
+            foreach (['cond', 'auto'] as $k) {
+                $r = $c[$k] ?? null;
+                if (!is_array($r) || trim((string)($r['campo'] ?? '')) === '' || !isset(OPERATORI_CONDIZIONE[$r['op'] ?? ''])) continue;
+                $x[$k] = ['campo' => mb_substr(trim((string)$r['campo']), 0, 200), 'nome' => '', 'op' => $r['op'], 'valore' => mb_substr(trim((string)($r['valore'] ?? '')), 0, 300)]
+                       + ($k === 'auto' ? ['imposta' => mb_substr(trim((string)($r['imposta'] ?? '')), 0, 500)] : []);
+            }
+            $out[] = $x;
         }
+        // Le condizioni indicano l'altro campo con la sua domanda: si risolve il nome (c1, c2…); se manca la condizione si toglie
+        $per_et = [];
+        foreach ($out as $x) $per_et[mb_strtolower($x['etichetta'])] = $x['nome'];
+        foreach ($out as &$x) foreach (['cond', 'auto'] as $k) {
+            if (!$x[$k]) continue;
+            $n = $per_et[mb_strtolower($x[$k]['campo'])] ?? '';
+            if ($n === '' || $n === $x['nome']) $x[$k] = null; else $x[$k]['nome'] = $n;
+        }
+        unset($x);
         return $out;
+    }
+}
+
+if (!function_exists('colonne_tabella')) {
+    // Colonne di una tabella a righe da "Nome:tipo" (tipo facoltativo: si riconosce dal nome). "Esito:scelta(Sì|No)" = tendina.
+    function colonne_tabella(array $spec): array {
+        $out = [];
+        foreach ($spec as $s) {
+            $s = trim((string)$s); $tipo = ''; $scelte = [];
+            if (preg_match('/^(.*?):\s*([a-z_]+)(?:\((.*)\))?\s*$/u', $s, $m) && isset(TIPI_COLONNA_TABELLA[$m[2]])) {
+                $s = trim($m[1]); $tipo = $m[2];
+                if ($tipo === 'scelta') $scelte = array_values(array_filter(array_map('trim', explode('|', (string)($m[3] ?? ''))), 'strlen'));
+            }
+            if ($s === '') continue;
+            if ($tipo === '') $tipo = tipo_colonna_da_nome($s);
+            $out[] = ['nome' => mb_substr($s, 0, 100), 'tipo' => $tipo, 'scelte' => $scelte];
+        }
+        return $out ?: [['nome' => 'Descrizione', 'tipo' => 'testo', 'scelte' => []]];
+    }
+    // Colonne scritte prima dei tipi: "Insegnamento", "CFU", "Voto", "Data", "S.S.D.", "Relatore"…
+    function tipo_colonna_da_nome(string $n): string {
+        $n = mb_strtolower($n);
+        if (preg_match('/^(insegnament|esam)/u', $n)) return 'insegnamento';
+        if (preg_match('/docente|relatore|tutor/u', $n)) return 'docente';
+        if (preg_match('/^(tot\.? )?cfu|crediti/u', $n) && !preg_match('/integrar|ricon|convalid|da /u', $n)) return 'cfu';
+        if (preg_match('/^voto/u', $n)) return 'voto';
+        if (preg_match('/^data$/u', $n)) return 'data';
+        if (preg_match('/^s\.?\s?s\.?\s?d\.?$/u', $n)) return 'ssd';
+        return 'testo';
+    }
+    // Colonne di nuovo in testo per il costruttore: "Nome:tipo"
+    function testo_colonne_tabella(array $colonne): string {
+        return implode(', ', array_map(fn($c) => $c['nome'] . ($c['tipo'] !== 'testo' ? ':' . $c['tipo'] . ($c['tipo'] === 'scelta' ? '(' . implode('|', $c['scelte']) . ')' : '') : ''), $colonne));
+    }
+}
+
+if (!function_exists('condizione_vera')) {
+    // Valuta una condizione ('op', 'valore') sul valore di un altro campo (testo; le scelte multiple sono separate da virgola)
+    function condizione_vera(array $cond, string $valore): bool {
+        $v = mb_strtolower(trim($valore)); $att = mb_strtolower(trim((string)$cond['valore']));
+        return match ($cond['op']) {
+            'uguale' => $v === $att || in_array($att, array_map('trim', explode(',', $v)), true),
+            'diverso' => !($v === $att || in_array($att, array_map('trim', explode(',', $v)), true)),
+            'contiene' => $att !== '' && mb_strpos($v, $att) !== false,
+            'compilato' => $v !== '',
+            'vuoto' => $v === '',
+            default => true,
+        };
     }
 }
 
 if (!function_exists('campi_studente')) {
     function campi_studente(array $campi): array { return array_values(array_filter($campi, fn($c) => !$c['ufficio'])); }
-    function campi_ufficio(array $campi): array { return array_values(array_filter($campi, fn($c) => $c['ufficio'] && $c['tipo'] !== 'file')); }
+    function campi_ufficio(array $campi): array { return array_values(array_filter($campi, fn($c) => $c['ufficio'] && !in_array($c['tipo'], ['file', 'titolo', 'info'], true))); }
 }
 
 if (!function_exists('modulo_didattica')) {
@@ -260,13 +356,32 @@ if (!function_exists('salva_allegato_pratica')) {
 
 if (!function_exists('leggi_risposte_modulo')) {
     // Risposte dal POST (campo_<nome>) e allegati ($_FILES campo_<nome>). Ritorna [risposte, errori].
-    // Le risposte: [['etichetta' => …, 'tipo' => …, 'valore' => …, 'file' => percorso|null, 'nome_file' => …, 'righe' => [[…]], 'colonne' => […]], ...]
+    // Le risposte: [['etichetta' => …, 'tipo' => …, 'valore' => …, 'file' => percorso|null, 'nome_file' => …, 'righe' => [[…]], 'colonne' => […],
+    // 'meta' => […] (insegnamento scelto dal catalogo: corso, a.a., CFU, S.S.D.), 'nascosto' => true se la condizione del campo non è vera], ...]
+    // I campi nascosti dalla logica non sono obbligatori e restano vuoti; quelli con un valore automatico lo prendono dal server.
     // $conn serve per controllare i corsi di studio proposti dall'anagrafe.
     function leggi_risposte_modulo(array $campi, $conn = null): array {
         $risposte = []; $errori = [];
+        // Valori grezzi di tutti i campi, per valutare le condizioni (anche su campi che vengono dopo)
+        $grezzi = [];
         foreach ($campi as $c) {
+            $v = $_POST['campo_' . $c['nome']] ?? '';
+            $grezzi[$c['nome']] = $c['tipo'] === 'checkbox' || $c['tipo'] === 'dichiarazione' ? (!empty($v) ? 'Sì' : '') : (is_array($v) ? implode(', ', array_filter(array_map(fn($x) => is_array($x) ? '' : trim((string)$x), $v), 'strlen')) : trim((string)$v));
+        }
+        $visibile = [];
+        foreach ($campi as $c) {
+            $vis = true;
+            // Condizione su un campo che non è in questo modulo (es. istruttoria dell'ufficio su una risposta dello studente): non si applica
+            if ($c['cond'] && array_key_exists($c['cond']['nome'], $grezzi)) $vis = ($visibile[$c['cond']['nome']] ?? true) && condizione_vera($c['cond'], (string)$grezzi[$c['cond']['nome']]);
+            $visibile[$c['nome']] = $vis;
+            if ($c['auto'] && $vis && array_key_exists($c['auto']['nome'], $grezzi) && condizione_vera($c['auto'], (string)$grezzi[$c['auto']['nome']])) $grezzi[$c['nome']] = $c['auto']['imposta'];
+        }
+        foreach ($campi as $c) {
+            if (in_array($c['tipo'], TIPI_SOLO_TESTO, true)) continue;
             $k = 'campo_' . $c['nome'];
             $r = ['etichetta' => $c['etichetta'], 'tipo' => $c['tipo'], 'valore' => '', 'file' => null, 'nome_file' => null];
+            if (!$visibile[$c['nome']]) { $r['nascosto'] = true; if ($c['tipo'] === 'tabella') { $r['colonne'] = $c['opzioni']; $r['righe'] = []; } $risposte[] = $r; continue; }
+            $auto = $c['auto'] && array_key_exists($c['auto']['nome'], $grezzi) && condizione_vera($c['auto'], (string)$grezzi[$c['auto']['nome']]);
             if ($c['tipo'] === 'file') {
                 $f = $_FILES[$k] ?? null;
                 if ($f && ($f['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE) {
@@ -274,30 +389,55 @@ if (!function_exists('leggi_risposte_modulo')) {
                     if ($p) { $r['file'] = $p; $r['nome_file'] = mb_substr(basename((string)$f['name']), 0, 200); $r['valore'] = $r['nome_file']; }
                     else $errori[] = $c['etichetta'] . ": allegato non valido (PDF, JPG o PNG fino a 10 MB)";
                 }
-            } elseif ($c['tipo'] === 'checkbox') {
+            } elseif ($auto) {
+                $r['valore'] = $c['auto']['imposta'];
+            } elseif ($c['tipo'] === 'checkbox' || $c['tipo'] === 'dichiarazione') {
                 $r['valore'] = !empty($_POST[$k]) ? 'Sì' : '';
+            } elseif ($c['tipo'] === 'multicheck') {
+                $scelte = array_values(array_intersect($c['opzioni'], array_map('strval', (array)($_POST[$k] ?? []))));
+                $r['valore'] = implode(', ', $scelte);
             } elseif ($c['tipo'] === 'tabella') {
                 // Colonne in array paralleli: campo_cX[0][], campo_cX[1][], …; si tengono le righe non vuote (max 60)
-                $cols = $c['opzioni'] ?: ['Descrizione']; $righe = [];
+                $cols = $c['colonne'] ?: colonne_tabella($c['opzioni']); $righe = [];
                 $dati = is_array($_POST[$k] ?? null) ? $_POST[$k] : [];
                 $n = max(0, ...array_map(fn($j) => is_array($dati[$j] ?? null) ? count($dati[$j]) : 0, array_keys($cols)));
                 for ($i = 0; $i < min($n, 60); $i++) {
                     $riga = [];
-                    foreach (array_keys($cols) as $j) $riga[] = mb_substr(trim((string)($dati[$j][$i] ?? '')), 0, 300);
+                    foreach ($cols as $j => $col) {
+                        $v = mb_substr(trim((string)($dati[$j][$i] ?? '')), 0, 300);
+                        if ($col['tipo'] === 'data' && preg_match('/^(\d{4})-(\d{2})-(\d{2})$/', $v, $m)) $v = "$m[3]/$m[2]/$m[1]";
+                        if ($col['tipo'] === 'scelta' && $v !== '' && $col['scelte'] && !in_array($v, $col['scelte'], true)) $v = '';
+                        $riga[] = $v;
+                    }
                     if (implode('', $riga) !== '') $righe[] = $riga;
                 }
-                $r['colonne'] = $cols; $r['righe'] = $righe;
+                $r['colonne'] = array_column($cols, 'nome'); $r['righe'] = $righe;
                 $r['valore'] = implode("\n", array_map(fn($x) => implode(' | ', $x), $righe));
             } else {
-                $v = mb_substr(trim((string)($_POST[$k] ?? '')), 0, $c['tipo'] === 'textarea' ? 5000 : 500);
+                $v = mb_substr(trim((string)($_POST[$k] ?? '')), 0, in_array($c['tipo'], ['textarea'], true) ? 5000 : 500);
                 if ($v !== '' && $c['tipo'] === 'email' && !filter_var($v, FILTER_VALIDATE_EMAIL)) $errori[] = $c['etichetta'] . ": email non valida";
+                if ($v !== '' && $c['tipo'] === 'codice_fiscale') {
+                    $v = strtoupper(preg_replace('/\s+/', '', $v));
+                    if (!preg_match('/^[A-Z0-9]{16}$|^\d{11}$/', $v)) $errori[] = $c['etichetta'] . ": codice fiscale non valido";
+                }
+                if ($v !== '' && $c['tipo'] === 'url') { if (!preg_match('#^https?://#i', $v)) $v = 'https://' . $v; if (!filter_var($v, FILTER_VALIDATE_URL)) $errori[] = $c['etichetta'] . ": indirizzo web non valido"; }
                 if ($v !== '' && in_array($c['tipo'], ['select', 'radio'], true) && !in_array($v, $c['opzioni'], true)) $v = '';
                 if ($v !== '' && $c['tipo'] === 'date' && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $v)) $v = '';
+                if ($v !== '' && $c['tipo'] === 'time' && !preg_match('/^\d{2}:\d{2}$/', $v)) $v = '';
+                if ($v !== '' && $c['tipo'] === 'number' && !is_numeric(str_replace(',', '.', $v))) $v = '';
                 if ($v !== '' && $c['tipo'] === 'anno_accademico' && !preg_match('/^\d{4}\/\d{4}$/', $v)) $v = '';
                 if ($v !== '' && $c['tipo'] === 'corso_studio' && $conn && ($corsi = array_merge([], ...array_values(scelte_anagrafe_didattica($conn, 'corso_studio')))) && !in_array($v, $corsi, true)) $v = '';
+                if ($c['tipo'] === 'insegnamento_ateneo' && $v !== '') {
+                    // Scelto dal catalogo: corso, anno di offerta, CFU e S.S.D. (si riconoscono nel verbale e nelle convalide)
+                    $meta = json_decode((string)($_POST[$k . '_meta'] ?? ''), true);
+                    if (is_array($meta) && trim((string)($meta['nome'] ?? '')) !== '') {
+                        $r['meta'] = ['id' => (int)($meta['id'] ?? 0), 'nome' => mb_substr((string)$meta['nome'], 0, 255), 'corso' => mb_substr((string)($meta['corso'] ?? ''), 0, 255),
+                                      'aa' => mb_substr((string)($meta['aa'] ?? ''), 0, 20), 'cfu' => is_numeric($meta['cfu'] ?? null) ? (float)$meta['cfu'] : null, 'ssd' => mb_substr((string)($meta['ssd'] ?? ''), 0, 20)];
+                    }
+                }
                 $r['valore'] = $v;
             }
-            if ($c['obbligatorio'] && $r['valore'] === '') $errori[] = $c['etichetta'] . ": campo obbligatorio";
+            if ($c['obbligatorio'] && $r['valore'] === '') $errori[] = $c['etichetta'] . ": " . ($c['tipo'] === 'dichiarazione' ? 'devi accettare la dichiarazione' : 'campo obbligatorio');
             $risposte[] = $r;
         }
         return [$risposte, $errori];
@@ -311,9 +451,9 @@ if (!function_exists('html_datalist_didattica')) {
         $serve = ['insegnamento' => false, 'docente' => false];
         foreach ($campi as $c) {
             if (isset($serve[$c['tipo']])) $serve[$c['tipo']] = true;
-            if ($c['tipo'] === 'tabella') foreach ($c['opzioni'] as $col) {
-                if (preg_match('/insegnament|esam/i', $col)) $serve['insegnamento'] = true;
-                if (preg_match('/docente|relatore|tutor/i', $col)) $serve['docente'] = true;
+            if ($c['tipo'] === 'tabella') foreach ($c['colonne'] ?: colonne_tabella($c['opzioni']) as $col) {
+                if (in_array($col['tipo'], ['insegnamento', 'insegnamento_dip'], true)) $serve['insegnamento'] = true;
+                if ($col['tipo'] === 'docente') $serve['docente'] = true;
             }
         }
         $out = '';
@@ -329,19 +469,31 @@ if (!function_exists('html_datalist_didattica')) {
 
 if (!function_exists('html_campo_pratica')) {
     // Campo del modulo online (pagina pubblica modulo.php e istruttoria dell'ufficio). $valore: testo o righe (tabella).
+    // Ogni campo sta in un contenitore .campo-pratica con la logica (data-cond, data-auto) letta da assets/js/campi-pratica.js.
     function html_campo_pratica(array $c, $valore = '', $conn = null): string {
+        $attr = ' data-nome="' . $c['nome'] . '" data-tipo="' . htmlspecialchars($c['tipo'], ENT_QUOTES) . '"';
+        foreach (['cond', 'auto'] as $k) if (!empty($c[$k])) $attr .= ' data-' . $k . '="' . htmlspecialchars(json_encode($c[$k], JSON_UNESCAPED_UNICODE), ENT_QUOTES, 'UTF-8') . '"';
+        return '<div class="campo-pratica"' . $attr . '>' . html_campo_pratica_interno($c, $valore, $conn) . '</div>';
+    }
+    function html_campo_pratica_interno(array $c, $valore, $conn): string {
         $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
         $id = 'mc_' . $c['nome']; $name = 'campo_' . $c['nome']; $req = $c['obbligatorio'] ? ' required' : '';
         $stella = $c['obbligatorio'] ? ' <span class="text-danger">*</span>' : '';
         $et = '<label class="form-label fw-bold" for="' . $id . '">' . $h($c['etichetta']) . $stella . '</label>';
-        $aiuto = $c['aiuto'] !== '' ? '<div class="form-text">' . $h($c['aiuto']) . '</div>' : '';
+        $aiuto = $c['aiuto'] !== '' ? '<div class="form-text">' . nl2br($h($c['aiuto'])) . '</div>' : '';
         $testo = is_array($valore) ? '' : (string)$valore;
         switch ($c['tipo']) {
+            case 'titolo': return '<h2 class="h5 fw-bold mt-4 mb-2 pb-1 border-bottom">' . $h($c['etichetta']) . '</h2>' . ($c['aiuto'] !== '' ? '<p class="small text-secondary">' . nl2br($h($c['aiuto'])) . '</p>' : '');
+            case 'info': return '<div class="alert alert-light border small mb-3"><strong>' . $h($c['etichetta']) . '</strong>' . ($c['aiuto'] !== '' ? '<div class="mt-1">' . nl2br($h($c['aiuto'])) . '</div>' : '') . '</div>';
             case 'textarea': return '<div class="mb-3">' . $et . '<textarea class="form-control" id="' . $id . '" name="' . $name . '" rows="4"' . $req . '>' . $h($testo) . '</textarea>' . $aiuto . '</div>';
             case 'select':
                 $o = '<option value="">--</option>';
                 foreach ($c['opzioni'] as $op) $o .= '<option' . ($op === $testo ? ' selected' : '') . '>' . $h($op) . '</option>';
                 return '<div class="mb-3">' . $et . '<select class="form-select" id="' . $id . '" name="' . $name . '"' . $req . '>' . $o . '</select>' . $aiuto . '</div>';
+            case 'multicheck':
+                $sel = array_map('trim', explode(',', $testo)); $o = '';
+                foreach ($c['opzioni'] as $i => $op) $o .= '<div class="form-check"><input class="form-check-input" type="checkbox" name="' . $name . '[]" id="' . $id . '_' . $i . '" value="' . $h($op) . '"' . (in_array($op, $sel, true) ? ' checked' : '') . '><label class="form-check-label" for="' . $id . '_' . $i . '">' . $h($op) . '</label></div>';
+                return '<fieldset class="mb-3"' . ($c['obbligatorio'] ? ' data-almeno-uno="1"' : '') . '><legend class="form-label fw-bold fs-6">' . $h($c['etichetta']) . $stella . '</legend>' . $o . $aiuto . '</fieldset>';
             case 'corso_studio':
                 $gruppi = $conn ? scelte_anagrafe_didattica($conn, 'corso_studio') : [];
                 if (!$gruppi) return '<div class="mb-3">' . $et . '<input type="text" class="form-control" id="' . $id . '" name="' . $name . '" value="' . $h($testo) . '"' . $req . '>' . $aiuto . '</div>';
@@ -361,48 +513,88 @@ if (!function_exists('html_campo_pratica')) {
             case 'docente':
                 $ph = $c['tipo'] === 'docente' ? 'Scrivi il cognome e scegli dall\'elenco' : 'Scrivi il nome e scegli dall\'elenco';
                 return '<div class="mb-3">' . $et . '<input type="text" class="form-control" id="' . $id . '" name="' . $name . '" value="' . $h($testo) . '" list="dl_' . $c['tipo'] . '" autocomplete="off" placeholder="' . $ph . '"' . $req . '>' . $aiuto . '</div>';
+            case 'insegnamento_ateneo':
+                // Testo scrivibile a mano + scelta guidata dal catalogo di Ateneo (tipo di corso, corso, a.a. di offerta, insegnamento)
+                return '<div class="mb-3">' . $et . '<div class="input-group"><input type="text" class="form-control ins-testo" id="' . $id . '" name="' . $name . '" value="' . $h($testo) . '" placeholder="Scegli dal catalogo o scrivi l\'insegnamento" autocomplete="off"' . $req . '>'
+                     . '<button type="button" class="btn btn-outline-primary ins-scegli" data-bersaglio="' . $id . '"><i class="fa fa-magnifying-glass me-1" aria-hidden="true"></i>Scegli</button></div>'
+                     . '<input type="hidden" name="' . $name . '_meta" class="ins-meta" value="">'
+                     . '<div class="form-text">Scegli tipo di corso, corso di studio e anno accademico di offerta; se l\'insegnamento non è in elenco scrivilo a mano.' . ($c['aiuto'] !== '' ? ' ' . $h($c['aiuto']) : '') . '</div></div>';
             case 'tabella':
-                $cols = $c['opzioni'] ?: ['Descrizione'];
+                $cols = $c['colonne'] ?: colonne_tabella($c['opzioni']);
                 $righe = is_array($valore) ? $valore : [];
                 $righe = array_merge($righe, array_fill(0, max(0, 3 - count($righe)), []));
-                $th = ''; foreach ($cols as $col) $th .= '<th scope="col" class="small">' . $h($col) . '</th>';
+                $th = ''; foreach ($cols as $col) $th .= '<th scope="col" class="small">' . $h($col['nome']) . '</th>';
                 $tr = '';
                 foreach ($righe as $riga) {
                     $tr .= '<tr>';
-                    foreach ($cols as $j => $col) {
-                        $lista = preg_match('/insegnament|esam/i', $col) ? ' list="dl_insegnamento"' : (preg_match('/docente|relatore|tutor/i', $col) ? ' list="dl_docente"' : '');
-                        $tr .= '<td><input type="text" class="form-control form-control-sm" name="' . $name . '[' . $j . '][]" value="' . $h($riga[$j] ?? '') . '" aria-label="' . $h($col) . '"' . $lista . ' autocomplete="off"></td>';
-                    }
+                    foreach ($cols as $j => $col) $tr .= '<td>' . html_cella_tabella($col, $name . '[' . $j . '][]', (string)($riga[$j] ?? '')) . '</td>';
                     $tr .= '<td><button type="button" class="btn btn-sm btn-link text-danger p-0 tab-togli" aria-label="Togli la riga"><i class="fa fa-times" aria-hidden="true"></i></button></td></tr>';
                 }
                 return '<fieldset class="mb-3"><legend class="form-label fw-bold fs-6 mb-1">' . $h($c['etichetta']) . $stella . '</legend>' . $aiuto
                      . '<div class="table-responsive"><table class="table table-sm table-bordered align-middle mb-1 tab-righe"><thead class="table-light"><tr>' . $th . '<th style="width:28px;"><span class="visually-hidden">Azioni</span></th></tr></thead><tbody>' . $tr . '</tbody></table></div>'
-                     . '<button type="button" class="btn btn-sm btn-outline-secondary tab-aggiungi"><i class="fa fa-plus me-1" aria-hidden="true"></i>Aggiungi riga</button></fieldset>';
+                     . '<button type="button" class="btn btn-sm btn-outline-secondary tab-aggiungi"><i class="fa fa-plus me-1" aria-hidden="true"></i>Aggiungi riga</button>'
+                     . (in_array('insegnamento', array_column($cols, 'tipo'), true) ? ' <span class="small text-secondary ms-1"><i class="fa fa-magnifying-glass" aria-hidden="true"></i> sceglie l\'insegnamento dal catalogo di Ateneo e compila CFU e S.S.D.</span>' : '') . '</fieldset>';
             case 'radio':
                 $o = '';
                 foreach ($c['opzioni'] as $i => $op) $o .= '<div class="form-check"><input class="form-check-input" type="radio" name="' . $name . '" id="' . $id . '_' . $i . '" value="' . $h($op) . '"' . ($op === $testo ? ' checked' : '') . ($i === 0 ? $req : '') . '><label class="form-check-label" for="' . $id . '_' . $i . '">' . $h($op) . '</label></div>';
                 return '<fieldset class="mb-3"><legend class="form-label fw-bold fs-6">' . $h($c['etichetta']) . $stella . '</legend>' . $o . $aiuto . '</fieldset>';
             case 'checkbox': return '<div class="mb-3 form-check"><input class="form-check-input" type="checkbox" id="' . $id . '" name="' . $name . '" value="1"' . ($testo !== '' ? ' checked' : '') . $req . '><label class="form-check-label fw-bold" for="' . $id . '">' . $h($c['etichetta']) . $stella . '</label>' . $aiuto . '</div>';
+            case 'dichiarazione':
+                return '<div class="mb-3 p-2 border rounded bg-light">' . ($c['aiuto'] !== '' ? '<div class="small mb-2">' . nl2br($h($c['aiuto'])) . '</div>' : '')
+                     . '<div class="form-check"><input class="form-check-input" type="checkbox" id="' . $id . '" name="' . $name . '" value="1"' . ($testo !== '' ? ' checked' : '') . $req . '><label class="form-check-label fw-bold" for="' . $id . '">' . $h($c['etichetta']) . $stella . '</label></div></div>';
             case 'file': return '<div class="mb-3">' . $et . '<input type="file" class="form-control" id="' . $id . '" name="' . $name . '" accept=".pdf,.jpg,.jpeg,.png,.p7m"' . $req . '><div class="form-text">PDF, JPG o PNG, fino a 10 MB.' . ($c['aiuto'] !== '' ? ' ' . $h($c['aiuto']) : '') . '</div></div>';
+            case 'codice_fiscale':
+                return '<div class="mb-3">' . $et . '<input type="text" class="form-control text-uppercase font-monospace" id="' . $id . '" name="' . $name . '" value="' . $h($testo) . '" maxlength="16" pattern="[A-Za-z0-9]{16}|[0-9]{11}" autocomplete="off" style="max-width:260px;"' . $req . '>' . $aiuto . '</div>';
             default:
-                $tipo = in_array($c['tipo'], ['email', 'tel', 'number', 'date'], true) ? $c['tipo'] : 'text';
-                return '<div class="mb-3">' . $et . '<input type="' . $tipo . '" class="form-control" id="' . $id . '" name="' . $name . '" value="' . $h($testo) . '"' . $req . '>' . $aiuto . '</div>';
+                $tipo = in_array($c['tipo'], ['email', 'tel', 'number', 'date', 'time', 'url'], true) ? $c['tipo'] : 'text';
+                return '<div class="mb-3">' . $et . '<input type="' . $tipo . '" class="form-control" id="' . $id . '" name="' . $name . '" value="' . $h($testo) . '"' . ($tipo === 'number' ? ' step="any"' : '') . $req . '>' . $aiuto . '</div>';
+        }
+    }
+}
+
+if (!function_exists('html_cella_tabella')) {
+    // Cella di una tabella a righe secondo il tipo della colonna
+    function html_cella_tabella(array $col, string $name, string $v): string {
+        $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+        $resto = ' aria-label="' . $h($col['nome']) . '" data-col="' . $h($col['tipo']) . '" autocomplete="off"';
+        $base = ' name="' . $name . '"' . $resto;
+        $nv = fn($x) => ' name="' . $name . '" value="' . $h($x) . '"' . $resto;
+        switch ($col['tipo']) {
+            case 'insegnamento':
+                return '<div class="input-group input-group-sm flex-nowrap"><input type="text" class="form-control form-control-sm"' . $nv($v) . ' list="dl_insegnamento" style="min-width:160px;">'
+                     . '<button type="button" class="btn btn-outline-primary ins-scegli" title="Scegli dal catalogo di Ateneo"><i class="fa fa-magnifying-glass" aria-hidden="true"></i><span class="visually-hidden">Scegli dal catalogo</span></button></div>';
+            case 'insegnamento_dip': return '<input type="text" class="form-control form-control-sm"' . $nv($v) . ' list="dl_insegnamento" style="min-width:160px;">';
+            case 'docente': return '<input type="text" class="form-control form-control-sm"' . $nv($v) . ' list="dl_docente">';
+            case 'cfu': case 'numero': return '<input type="number" step="any" min="0" class="form-control form-control-sm"' . $nv(str_replace(',', '.', $v)) . ' style="min-width:70px;">';
+            case 'voto': return '<input type="text" class="form-control form-control-sm"' . $nv($v) . ' placeholder="es. 28/30" maxlength="20" style="min-width:80px;">';
+            case 'data':
+                $iso = preg_match('#^(\d{2})/(\d{2})/(\d{4})$#', $v, $m) ? "$m[3]-$m[2]-$m[1]" : $v;
+                return '<input type="date" class="form-control form-control-sm"' . $nv($iso) . '>';
+            case 'anno_accademico':
+                $o = '<option value=""></option>'; foreach (anni_accademici_scelta() as $a) $o .= '<option' . ($a === $v ? ' selected' : '') . '>' . $a . '</option>';
+                return '<select class="form-select form-select-sm"' . $base . '>' . $o . '</select>';
+            case 'scelta':
+                $o = '<option value=""></option>'; foreach ($col['scelte'] as $s) $o .= '<option' . ($s === $v ? ' selected' : '') . '>' . $h($s) . '</option>';
+                return '<select class="form-select form-select-sm"' . $base . '>' . $o . '</select>';
+            default: return '<input type="text" class="form-control form-control-sm"' . $nv($v) . '' . ($col['tipo'] === 'ssd' ? ' maxlength="20" style="min-width:80px;"' : '') . '>';
         }
     }
 }
 
 if (!function_exists('js_tabelle_pratica')) {
-    // Righe in più / in meno nei campi "tabella" (una volta per pagina)
+    // Righe delle tabelle, logica dei campi e scelta degli insegnamenti dal catalogo (una volta per pagina)
     function js_tabelle_pratica(): string {
-        return "<script>document.addEventListener('click',function(e){var a=e.target.closest('.tab-aggiungi');if(a){var tb=a.closest('fieldset').querySelector('tbody'),r=tb.lastElementChild.cloneNode(true);r.querySelectorAll('input').forEach(function(i){i.value='';});tb.appendChild(r);r.querySelector('input').focus();return;}"
-             . "var t=e.target.closest('.tab-togli');if(t){var tr=t.closest('tr'),tb2=tr.parentNode;if(tb2.children.length>1)tr.remove();else tr.querySelectorAll('input').forEach(function(i){i.value='';});}});</script>";
+        $base = rtrim((string)parse_url(url_base_sito(), PHP_URL_PATH), '/');
+        $v = @filemtime(RADICE_SITO . '/assets/js/campi-pratica.js') ?: 1;
+        return '<script src="' . htmlspecialchars($base, ENT_QUOTES) . '/assets/js/campi-pratica.js?v=' . $v . '" data-base="' . htmlspecialchars($base, ENT_QUOTES) . '"></script>';
     }
 }
 
 if (!function_exists('valori_post_campo')) {
-    // Valore da rimettere nel campo dopo un errore (le tabelle tornano come righe)
+    // Valore da rimettere nel campo dopo un errore (le tabelle tornano come righe, le scelte multiple come testo)
     function valori_post_campo(array $c) {
         $v = $_POST['campo_' . $c['nome']] ?? '';
+        if ($c['tipo'] === 'multicheck') return implode(', ', array_map('strval', (array)$v));
         if ($c['tipo'] !== 'tabella') return is_array($v) ? '' : (string)$v;
         $righe = [];
         foreach ((is_array($v) ? $v : []) as $j => $col) foreach ((array)$col as $i => $x) $righe[$i][$j] = (string)$x;
@@ -422,7 +614,9 @@ if (!function_exists('html_risposta_pratica')) {
             foreach ($r['righe'] as $riga) { $o .= '<tr>'; foreach ($riga as $x) $o .= '<td>' . $h($x) . '</td>'; $o .= '</tr>'; }
             return $o . '</tbody></table></div>';
         }
-        return nl2br($h(($r['valore'] ?? '') !== '' ? $r['valore'] : '—'));
+        $txt = ($r['valore'] ?? '') !== '' ? $r['valore'] : '—';
+        if (($r['tipo'] ?? '') === 'date' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $txt)) $txt = date('d/m/Y', strtotime($txt));
+        return nl2br($h($txt)) . (!empty($r['meta']['corso']) ? '<div class="text-secondary small">' . $h($r['meta']['corso'] . ($r['meta']['aa'] !== '' ? ' · a.a. di offerta ' . $r['meta']['aa'] : '')) . '</div>' : '');
     }
 }
 
@@ -464,6 +658,10 @@ if (!function_exists('email_pratica')) {
                 break;
             case 'msg_ufficio':
                 if (filter_var($p['email'], FILTER_VALIDATE_EMAIL)) inviaNotificaEmail($p['email'], "Nuovo messaggio sulla pratica " . $p['codice'], "<p>Gentile " . $h($p['nome']) . ", l'ufficio ti ha scritto:</p>" . $intest . "<p style='background:#f1f5f9;padding:10px;border-radius:6px;'>" . nl2br($h($testo)) . "</p>" . $bottone($link_s, 'Rispondi'), $conn, '#047857');
+                break;
+            case 'passaggio':
+                // Lo studente sa a chi è passata la pratica (la nota per l'operatore resta interna)
+                if (filter_var($p['email'], FILTER_VALIDATE_EMAIL)) inviaNotificaEmail($p['email'], "Pratica " . $p['codice'] . ": passata a " . $testo, "<p>Gentile " . $h($p['nome']) . ",</p><p>la tua pratica è passata a: <strong>" . $h($testo) . "</strong>.</p>" . $intest . "<p>Se l'ufficio ti chiede altri documenti li puoi aggiungere dalla pratica.</p>" . $bottone($link_s, 'Vedi la pratica'), $conn, '#047857');
                 break;
             case 'msg_studente':
                 foreach ($ufficio as $e) inviaNotificaEmail($e, "Messaggio sulla pratica " . $p['codice'] . " – " . trim($p['cognome'] . ' ' . $p['nome']), "<p>Nuovo messaggio dello studente:</p>" . $intest . "<p style='background:#f1f5f9;padding:10px;border-radius:6px;'>" . nl2br($h($testo)) . "</p>" . $bottone($link_u, 'Apri nel pannello'), $conn, '#047857');
@@ -517,7 +715,8 @@ if (!function_exists('cambia_stato_pratica')) {
         if ($rj) { $r = json_decode($rj, true); $testo_ev = ($r['tipo'] === 'autodichiarazione' ? "Richiesta un'autodichiarazione: " : "Richiesti documenti: ") . $r['testo']; }
         evento_pratica($conn, $id, 'stato', 'ufficio', $uid, $stato, $testo_ev, null, null, false, $autore_nome);
         $p['stato'] = $stato;
-        email_pratica($conn, $p, 'stato', $testo_ev);
+        // Email solo ai passaggi: richiesta di integrazione ed esito (il ritorno "in lavorazione" non è un passaggio)
+        if (in_array($stato, ['integrazione', 'accolta', 'respinta', 'chiusa'], true)) email_pratica($conn, $p, 'stato', $testo_ev);
         return true;
     }
 }
@@ -546,13 +745,19 @@ if (!function_exists('messaggio_pratica')) {
                 evento_pratica($conn, $id, 'stato', 'studente', $uid, 'in_lavorazione', 'Integrazione inviata');
             }
         }
-        if ($interno) {
-            // Nota interna: avvisa chi ha la pratica in carico (se non è chi scrive)
-            $o = !empty($p['assegnata_a']) ? operatore_ufficio($conn, (int)$p['assegnata_a']) : null;
-            if ($o && mb_strpos($autore_nome, $o['nominativo']) !== 0)
-                inviaNotificaEmail($o['email'], "Nota sulla pratica " . $p['codice'], "<p>" . htmlspecialchars($autore_nome) . " ha scritto una nota interna sulla pratica <strong>" . htmlspecialchars($p['codice']) . "</strong> (" . htmlspecialchars($p['modulo_titolo']) . "):</p><p style='background:#f1f5f9;padding:10px;border-radius:6px;'>" . nl2br(htmlspecialchars($testo)) . "</p><p><a href='" . htmlspecialchars(url_base_sito() . '/admin/didattica.php?tab=pratiche&id=' . $id) . "'>Apri la pratica</a></p>", $conn, '#047857');
-            return null;
+        if ($autore === 'ufficio') {
+            // Un operatore che aveva la pratica prima (ufficio precedente) la integra: lo sa chi ce l'ha in carico ora
+            $u_aut = $uid > 0 ? ($conn->query("SELECT * FROM utenti WHERE id = " . (int)$uid)->fetch_assoc() ?: null) : null;
+            $o_aut = $u_aut ? operatore_ufficio($conn, 0, $u_aut) : null;
+            $o_car = !empty($p['assegnata_a']) ? operatore_ufficio($conn, (int)$p['assegnata_a']) : null;
+            if ($o_aut && $o_car && (int)$o_aut['id'] !== (int)$o_car['id'] && in_array((int)$o_aut['id'], operatori_pratica($conn, $id), true))
+                inviaNotificaEmail($o_car['email'], "Integrazione sulla pratica " . $p['codice'] . " da " . $o_aut['nominativo'],
+                    "<p>" . htmlspecialchars(etichetta_operatore($o_aut)) . ", che ha avuto in carico la pratica <strong>" . htmlspecialchars($p['codice']) . "</strong> (" . htmlspecialchars($p['modulo_titolo']) . "), ha aggiunto:</p>"
+                    . "<p style='background:#f1f5f9;padding:10px;border-radius:6px;'>" . nl2br(htmlspecialchars($testo !== '' ? $testo : '(documento allegato)')) . ($nome_all ? "<br><em>Allegato: " . htmlspecialchars($nome_all) . "</em>" : '') . "</p>"
+                    . "<p><a href='" . htmlspecialchars(url_base_sito() . '/admin/didattica.php?tab=pratiche&id=' . $id) . "'>Apri la pratica</a></p>", $conn, '#047857');
         }
+        // Le note interne non mandano email (le notifiche partono ai passaggi della pratica)
+        if ($interno) return null;
         email_pratica($conn, $p, $autore === 'ufficio' ? 'msg_ufficio' : 'msg_studente', $testo . ($nome_all ? "\n[Allegato: $nome_all]" : ''));
         return null;
     }
@@ -605,12 +810,41 @@ if (!function_exists('assegna_pratica')) {
         $stato = in_array($p['stato'], ['inviata'], true) ? 'in_lavorazione' : $p['stato'];
         $st = $conn->prepare("UPDATE pratiche SET assegnata_a = ?, passo = ?, stato = ?, aggiornata_il = NOW() WHERE id = ?");
         $st->bind_param("iisi", $op_id, $passo, $stato, $id); $st->execute();
+        // Chi l'ha avuta resta tra gli operatori della pratica: continua a vederla e a integrarla
+        $conn->query("INSERT INTO pratiche_operatori (pratica_id, operatore_id, passo) VALUES ($id, $op_id, $passo) ON DUPLICATE KEY UPDATE passo = VALUES(passo)");
+        if (!empty($p['assegnata_a'])) $conn->query("INSERT IGNORE INTO pratiche_operatori (pratica_id, operatore_id, passo) VALUES ($id, " . (int)$p['assegnata_a'] . ", " . (int)$p['passo'] . ")");
         evento_pratica($conn, $id, 'passaggio', 'ufficio', $uid, $stato !== $p['stato'] ? $stato : null, 'In carico a: ' . passi_pratica($m)[$passo] . ' – ' . $o['nominativo'], null, null, false, $autore_nome);
         if (trim($nota) !== '') evento_pratica($conn, $id, 'messaggio', 'ufficio', $uid, null, mb_substr(trim($nota), 0, 3000), null, null, true, $autore_nome);
         $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
         inviaNotificaEmail($o['email'], "Pratica assegnata: " . $p['modulo_titolo'] . " – " . trim($p['cognome'] . ' ' . $p['nome']),
             "<p>Gentile " . $h($o['nominativo']) . ",</p><p>ti è stata assegnata la pratica <strong>" . $h($p['codice']) . "</strong> (" . $h($p['modulo_titolo']) . ") come <strong>" . $h(passi_pratica($m)[$passo]) . "</strong>" . ($autore_nome !== '' ? " da " . $h($autore_nome) : '') . ".</p>"
             . (trim($nota) !== '' ? "<p style='background:#f1f5f9;padding:10px;border-radius:6px;'>" . nl2br($h($nota)) . "</p>" : '')
+            . "<p style='margin-top:18px;'><a href='" . $h(url_base_sito() . '/admin/didattica.php?tab=pratiche&id=' . $id) . "' style='background:#047857;color:#fff;padding:10px 18px;text-decoration:none;border-radius:6px;font-weight:bold;'>Apri la pratica</a></p>", $conn, '#047857');
+        if ((int)($p['assegnata_a'] ?? 0) !== $op_id || (int)$p['passo'] !== $passo) email_pratica($conn, $p, 'passaggio', passi_pratica($m)[$passo]);
+        return null;
+    }
+}
+
+if (!function_exists('operatori_pratica')) {
+    // Operatori che hanno avuto (o hanno) in carico la pratica: id
+    function operatori_pratica($conn, int $id): array {
+        $r = @$conn->query("SELECT operatore_id FROM pratiche_operatori WHERE pratica_id = $id ORDER BY passo, dal");
+        return $r ? array_map('intval', array_column($r->fetch_all(MYSQLI_ASSOC), 'operatore_id')) : [];
+    }
+}
+
+if (!function_exists('richiedi_a_operatore')) {
+    // Chi ha in carico la pratica chiede un'integrazione a un operatore che l'ha avuta prima (nota interna + email a quell'operatore)
+    function richiedi_a_operatore($conn, int $id, int $op_id, string $testo, int $uid, string $autore_nome = ''): ?string {
+        $p = pratica($conn, $id); $o = operatore_ufficio($conn, $op_id);
+        $testo = mb_substr(trim($testo), 0, 3000);
+        if (!$p || !$o) return "Scegli l'operatore.";
+        if ($testo === '') return "Scrivi cosa serve.";
+        evento_pratica($conn, $id, 'richiesta', 'ufficio', $uid, null, "Richiesta a " . $o['nominativo'] . ": " . $testo, null, null, true, $autore_nome);
+        $h = fn($s) => htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+        inviaNotificaEmail($o['email'], "Integrazione richiesta sulla pratica " . $p['codice'] . " – " . trim($p['cognome'] . ' ' . $p['nome']),
+            "<p>Gentile " . $h($o['nominativo']) . ",</p><p>" . $h($autore_nome ?: "L'ufficio") . " ti chiede di integrare la pratica <strong>" . $h($p['codice']) . "</strong> (" . $h($p['modulo_titolo']) . "), che hai avuto in carico:</p>"
+            . "<p style='background:#f1f5f9;padding:10px;border-radius:6px;'>" . nl2br($h($testo)) . "</p><p>Aggiungi i documenti come attività o nota nella pratica.</p>"
             . "<p style='margin-top:18px;'><a href='" . $h(url_base_sito() . '/admin/didattica.php?tab=pratiche&id=' . $id) . "' style='background:#047857;color:#fff;padding:10px 18px;text-decoration:none;border-radius:6px;font-weight:bold;'>Apri la pratica</a></p>", $conn, '#047857');
         return null;
     }
@@ -675,6 +909,290 @@ if (!function_exists('seduta_didattica')) {
     }
 }
 
+// ==============================================================================
+// CONSIGLI DEI CORSI DI STUDIO: REFERENTI, COMPONENTI, PRESENZE E DECISIONI IN SEDUTA
+// L'Ufficio didattico sceglie i referenti di ogni consiglio; i referenti inseriscono una volta sola i componenti (docenti
+// dall'anagrafe, rappresentanti scritti a mano) e in ogni seduta segnano presente / assente giustificato / ingiustificato.
+// Per ogni pratica portata in seduta si registrano l'esito e le decisioni: convalide degli esami (insegnamento del
+// Dipartimento dall'anagrafe, totale o parziale, CFU riconosciuti e da integrare) o insegnamenti in piano / fuori piano.
+// ==============================================================================
+
+if (!defined('STATI_PRESENZA')) define('STATI_PRESENZA', ['P' => 'Presente', 'AG' => 'Assente giustificato', 'AI' => 'Assente ingiustificato']);
+if (!defined('QUALIFICHE_CONSIGLIO')) define('QUALIFICHE_CONSIGLIO', ['Professori ordinari', 'Professori associati', 'Ricercatori', 'Docenti a contratto', 'Rappresentanti degli studenti', 'Personale tecnico-amministrativo']);
+if (!defined('ESITI_SEDUTA')) define('ESITI_SEDUTA', [
+    'approvata' => ['Approvata', '#15803d'], 'approvata_mod' => ['Approvata con modifiche', '#0f766e'], 'respinta' => ['Respinta', '#b91c1c'], 'rinviata' => ['Rinviata', '#b45309'],
+]);
+if (!defined('DECISIONI_SEDUTA')) define('DECISIONI_SEDUTA', ['' => 'Solo esito e delibera', 'convalide' => 'Convalida degli esami (totale o parziale)', 'piano' => 'Piano di studi (in piano / fuori piano)']);
+if (!defined('ESITI_CONVALIDA')) define('ESITI_CONVALIDA', ['totale' => 'Convalida totale', 'parziale' => 'Convalida parziale', 'no' => 'Non convalidato']);
+if (!defined('ESITI_PIANO')) define('ESITI_PIANO', ['in_piano' => 'Approvato in piano', 'fuori_piano' => 'Approvato fuori piano', 'no' => 'Non approvato']);
+
+if (!function_exists('consigli_didattica')) {
+    function consigli_didattica($conn, bool $solo_attivi = false): array {
+        $out = [];
+        $r = @$conn->query("SELECT * FROM didattica_consigli" . ($solo_attivi ? " WHERE attivo = 1" : '') . " ORDER BY ordine, nome");
+        while ($r && $x = $r->fetch_assoc()) $out[(int)$x['id']] = $x;
+        return $out;
+    }
+    function consiglio_didattica($conn, int $id): ?array {
+        $r = @$conn->query("SELECT * FROM didattica_consigli WHERE id = $id");
+        return $r ? ($r->fetch_assoc() ?: null) : null;
+    }
+    // Componenti (ordinati per qualifica come nel verbale) o referenti del consiglio
+    function persone_consiglio($conn, int $cid, string $ruolo = 'componente'): array {
+        $st = $conn->prepare("SELECT * FROM didattica_consigli_persone WHERE consiglio_id = ? AND ruolo = ? ORDER BY ordine, nominativo");
+        $st->bind_param("is", $cid, $ruolo); $st->execute();
+        $el = $st->get_result()->fetch_all(MYSQLI_ASSOC);
+        $ord = array_flip(QUALIFICHE_CONSIGLIO);
+        usort($el, fn($a, $b) => ($ord[$a['qualifica']] ?? 50) <=> ($ord[$b['qualifica']] ?? 50) ?: strcmp((string)$a['qualifica'], (string)$b['qualifica']) ?: (int)$a['ordine'] <=> (int)$b['ordine'] ?: strcmp($a['nominativo'], $b['nominativo']));
+        return $el;
+    }
+}
+
+if (!function_exists('consigli_referente')) {
+    // Consigli di cui l'utente è referente (riconosciuto dall'email o dalla scheda dell'anagrafe): id
+    function consigli_referente($conn, ?array $u): array {
+        if (!$u || empty($u['id'])) return [];
+        $email = strtolower(trim((string)($u['email'] ?? ''))); $pid = (string)($u['persona_id'] ?? '');
+        $out = [];
+        $r = @$conn->query("SELECT consiglio_id, email, persona_id FROM didattica_consigli_persone WHERE ruolo = 'referente'");
+        while ($r && $x = $r->fetch_assoc()) {
+            if (($email !== '' && strtolower((string)$x['email']) === $email) || ($pid !== '' && (string)$x['persona_id'] === $pid)) $out[] = (int)$x['consiglio_id'];
+        }
+        return array_values(array_unique($out));
+    }
+}
+
+if (!function_exists('qualifica_da_ruolo')) {
+    // Gruppo del verbale proposto dal ruolo dell'anagrafe ("Professore Ordinario" → "Professori ordinari")
+    function qualifica_da_ruolo(string $ruolo): string {
+        $r = mb_strtolower($ruolo);
+        if (str_contains($r, 'ordinari')) return 'Professori ordinari';
+        if (str_contains($r, 'associat')) return 'Professori associati';
+        if (str_contains($r, 'ricercat')) return 'Ricercatori';
+        if (str_contains($r, 'contratt')) return 'Docenti a contratto';
+        if (str_contains($r, 'student')) return 'Rappresentanti degli studenti';
+        return $ruolo !== '' ? 'Professori associati' : '';
+    }
+}
+
+if (!function_exists('aggiungi_persona_consiglio')) {
+    // Referente o componente dall'anagrafe ($persona_id) o scritto a mano ($nominativo, es. rappresentanti degli studenti).
+    // Ritorna un messaggio di errore o null. Le persone già presenti non si duplicano.
+    function aggiungi_persona_consiglio($conn, int $cid, string $ruolo, string $persona_id, string $qualifica = '', string $nominativo = '', string $email = ''): ?string {
+        if (!consiglio_didattica($conn, $cid)) return "Consiglio non trovato.";
+        $ruolo = $ruolo === 'referente' ? 'referente' : 'componente';
+        $pid = null;
+        if ($persona_id !== '') {
+            $p = function_exists('persona_ateneo') ? persona_ateneo($conn, $persona_id) : null;
+            if (!$p) return "Persona non trovata nell'anagrafe di Ateneo.";
+            $pid = $persona_id; $nominativo = trim($p['cognome'] . ' ' . $p['nome']); $email = strtolower(trim((string)$p['email']));
+            if ($qualifica === '') $qualifica = qualifica_da_ruolo((string)$p['ruolo']);
+            if ($ruolo === 'referente' && !filter_var($email, FILTER_VALIDATE_EMAIL)) return "La persona scelta non ha un'email nell'anagrafe: non potrebbe accedere.";
+        } else {
+            $nominativo = mb_substr(trim($nominativo), 0, 200); $email = strtolower(trim($email));
+            if ($nominativo === '') return "Scrivi il nome o scegli dall'anagrafe.";
+            if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) return "Email non valida.";
+            if ($ruolo === 'referente' && $email === '') return "Per un referente serve l'email istituzionale (con quella entra nel pannello).";
+        }
+        foreach (persone_consiglio($conn, $cid, $ruolo) as $x) {
+            if (($pid && $x['persona_id'] === $pid) || (!$pid && mb_strtolower($x['nominativo']) === mb_strtolower($nominativo))) return $ruolo === 'referente' ? "È già referente di questo consiglio." : "È già tra i componenti.";
+        }
+        $qualifica = mb_substr(trim($qualifica), 0, 150);
+        $ordine = (int)($conn->query("SELECT COALESCE(MAX(ordine), 0) + 1 n FROM didattica_consigli_persone WHERE consiglio_id = $cid")->fetch_assoc()['n'] ?? 1);
+        $st = $conn->prepare("INSERT INTO didattica_consigli_persone (consiglio_id, ruolo, persona_id, email, nominativo, qualifica, ordine) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $st->bind_param("isssssi", $cid, $ruolo, $pid, $email, $nominativo, $qualifica, $ordine);
+        return $st->execute() ? null : "Salvataggio non riuscito.";
+    }
+}
+
+if (!function_exists('presenze_seduta')) {
+    // Presenze della seduta: quelle salvate più i componenti del consiglio non ancora segnati (presenti). [componente_id => riga]
+    function presenze_seduta($conn, array $s): array {
+        $out = [];
+        $r = @$conn->query("SELECT * FROM didattica_sedute_presenze WHERE seduta_id = " . (int)$s['id'] . " ORDER BY ordine, nominativo");
+        while ($r && $x = $r->fetch_assoc()) $out[(int)$x['componente_id']] = $x + ['_salvata' => true];
+        if (!empty($s['consiglio_id'])) {
+            foreach (persone_consiglio($conn, (int)$s['consiglio_id']) as $i => $c) {
+                if (!isset($out[(int)$c['id']])) $out[(int)$c['id']] = ['seduta_id' => $s['id'], 'componente_id' => $c['id'], 'nominativo' => $c['nominativo'], 'qualifica' => $c['qualifica'], 'ordine' => 1000 + $i, 'stato' => 'P', '_salvata' => false];
+                else { $out[(int)$c['id']]['ordine'] = $i; }
+            }
+        }
+        $ord = array_flip(QUALIFICHE_CONSIGLIO);
+        uasort($out, fn($a, $b) => ($ord[$a['qualifica']] ?? 50) <=> ($ord[$b['qualifica']] ?? 50) ?: strcmp((string)$a['qualifica'], (string)$b['qualifica']) ?: (int)$a['ordine'] <=> (int)$b['ordine']);
+        return $out;
+    }
+    // Salva gli stati (P / AG / AI) per componente: nome e qualifica restano nella seduta anche se il componente cambia dopo
+    function salva_presenze_seduta($conn, array $s, array $stati): int {
+        $tutte = presenze_seduta($conn, $s); $n = 0;
+        $st = $conn->prepare("INSERT INTO didattica_sedute_presenze (seduta_id, componente_id, nominativo, qualifica, ordine, stato) VALUES (?, ?, ?, ?, ?, ?)
+                              ON DUPLICATE KEY UPDATE stato = VALUES(stato), ordine = VALUES(ordine)");
+        $sid = (int)$s['id']; $i = 0;
+        foreach ($tutte as $cid => $x) {
+            $stato = isset(STATI_PRESENZA[$stati[$cid] ?? '']) ? $stati[$cid] : $x['stato'];
+            $ord = $i++;
+            $st->bind_param("iissis", $sid, $cid, $x['nominativo'], $x['qualifica'], $ord, $stato);
+            if ($st->execute()) $n++;
+        }
+        return $n;
+    }
+    function riepilogo_presenze(array $presenze): array {
+        $n = ['P' => 0, 'AG' => 0, 'AI' => 0];
+        foreach ($presenze as $x) $n[$x['stato']] = ($n[$x['stato']] ?? 0) + 1;
+        return $n;
+    }
+}
+
+if (!function_exists('utente_vede_pratica')) {
+    // Chi gestisce la Didattica vede tutte le pratiche; il referente di un consiglio quelle portate nelle sedute del suo consiglio
+    function utente_vede_pratica($conn, ?array $u, array $p): bool {
+        if (utente_gestisce_didattica($conn, $u)) return true;
+        if (empty($p['seduta_id']) || !($cons = consigli_referente($conn, $u))) return false;
+        $s = seduta_didattica($conn, (int)$p['seduta_id']);
+        return $s && in_array((int)$s['consiglio_id'], $cons, true);
+    }
+}
+
+if (!function_exists('decisione_modulo')) {
+    function decisione_modulo(?array $m): string {
+        $v = json_decode((string)($m['verbale_json'] ?? ''), true) ?: [];
+        return isset(DECISIONI_SEDUTA[$v['decisione'] ?? '']) ? (string)($v['decisione'] ?? '') : '';
+    }
+}
+
+if (!function_exists('righe_richieste_pratica')) {
+    // Insegnamenti indicati dallo studente (righe delle tabelle con una colonna "insegnamento", campi Insegnamento):
+    // [['richiesto', 'cfu', 'voto', 'ssd', 'data']]
+    function righe_richieste_pratica(array $p, array $campi = []): array {
+        $tipi_col = [];
+        foreach ($campi as $c) if ($c['tipo'] === 'tabella') $tipi_col[mb_strtolower($c['etichetta'])] = array_column($c['colonne'] ?: colonne_tabella($c['opzioni']), 'tipo');
+        $out = [];
+        foreach (json_decode((string)$p['risposte_json'], true) ?: [] as $r) {
+            if (!empty($r['nascosto'])) continue;
+            if (($r['tipo'] ?? '') === 'tabella' && !empty($r['righe'])) {
+                $tipi = $tipi_col[mb_strtolower((string)$r['etichetta'])] ?? array_map('tipo_colonna_da_nome', $r['colonne'] ?? []);
+                $j_ins = array_search('insegnamento', $tipi, true);
+                if ($j_ins === false) $j_ins = array_search('insegnamento_dip', $tipi, true);
+                if ($j_ins === false) continue;
+                $col = fn(string $t, array $riga) => ($j = array_search($t, $tipi, true)) !== false ? (string)($riga[$j] ?? '') : '';
+                foreach ($r['righe'] as $riga) {
+                    if (trim((string)($riga[$j_ins] ?? '')) === '') continue;
+                    $out[] = ['richiesto' => (string)$riga[$j_ins], 'cfu' => $col('cfu', $riga), 'voto' => $col('voto', $riga), 'ssd' => $col('ssd', $riga), 'data' => $col('data', $riga)];
+                }
+            } elseif (in_array($r['tipo'] ?? '', ['insegnamento', 'insegnamento_ateneo'], true) && trim((string)$r['valore']) !== '') {
+                $m = $r['meta'] ?? [];
+                $out[] = ['richiesto' => (string)$r['valore'], 'cfu' => isset($m['cfu']) && $m['cfu'] !== null ? (string)$m['cfu'] : '', 'voto' => '', 'ssd' => (string)($m['ssd'] ?? ''), 'data' => ''];
+            }
+        }
+        return $out;
+    }
+}
+
+if (!function_exists('decisioni_pratica')) {
+    // Decisioni salvate in seduta, altrimenti le righe proposte dalle richieste dello studente: ['tipo', 'righe' => [...]]
+    function decisioni_pratica(array $p, string $tipo, array $campi = []): array {
+        $d = json_decode((string)($p['decisioni_json'] ?? ''), true);
+        if (is_array($d) && isset($d['righe']) && ($d['tipo'] ?? '') === $tipo) return $d;
+        $righe = [];
+        foreach (righe_richieste_pratica($p, $campi) as $r) {
+            $righe[] = $tipo === 'piano' ? $r + ['esito' => 'in_piano']
+                                          : $r + ['ins' => '', 'ins_id' => 0, 'ins_cfu' => '', 'esito' => 'totale', 'cfu_ric' => '', 'cfu_int' => ''];
+        }
+        return ['tipo' => $tipo, 'righe' => $righe, '_proposte' => true];
+    }
+}
+
+if (!function_exists('leggi_decisioni_post')) {
+    // Righe delle decisioni dal POST (array paralleli d_<campo>[]); l'insegnamento convalidato si riconosce nell'anagrafe
+    // del Dipartimento (id e CFU); CFU riconosciuti e da integrare si completano se mancano
+    function leggi_decisioni_post($conn, string $tipo, array $post): array {
+        $num = fn($v) => ($v = str_replace(',', '.', trim((string)$v))) !== '' && is_numeric($v) ? rtrim(rtrim(number_format((float)$v, 1, '.', ''), '0'), '.') : '';
+        $anag = [];
+        foreach (insegnamenti_dipartimento_scelta($conn) as $i) $anag[mb_strtolower(etichetta_insegnamento_scelta($i))] = $i;
+        $righe = [];
+        foreach ((array)($post['d_richiesto'] ?? []) as $k => $ric) {
+            $ric = mb_substr(trim((string)$ric), 0, 300);
+            $r = ['richiesto' => $ric, 'cfu' => $num($post['d_cfu'][$k] ?? ''), 'voto' => mb_substr(trim((string)($post['d_voto'][$k] ?? '')), 0, 20), 'ssd' => mb_substr(trim((string)($post['d_ssd'][$k] ?? '')), 0, 20), 'data' => mb_substr(trim((string)($post['d_data'][$k] ?? '')), 0, 20)];
+            if ($tipo === 'piano') {
+                if ($ric === '') continue;
+                $r['esito'] = isset(ESITI_PIANO[$post['d_esito'][$k] ?? '']) ? $post['d_esito'][$k] : 'in_piano';
+            } else {
+                $ins = mb_substr(trim((string)($post['d_ins'][$k] ?? '')), 0, 300);
+                if ($ric === '' && $ins === '') continue;
+                $a = $anag[mb_strtolower($ins)] ?? null;
+                $r += ['ins' => $a ? $a['nome'] . ' – ' . $a['corso'] : $ins, 'ins_id' => $a ? $a['id'] : 0, 'ins_cfu' => $a && $a['cfu'] !== null ? $num($a['cfu']) : $num($post['d_ins_cfu'][$k] ?? ''),
+                       'esito' => isset(ESITI_CONVALIDA[$post['d_esito'][$k] ?? '']) ? $post['d_esito'][$k] : 'totale',
+                       'cfu_ric' => $num($post['d_cfu_ric'][$k] ?? ''), 'cfu_int' => $num($post['d_cfu_int'][$k] ?? '')];
+                if ($r['esito'] === 'totale') {
+                    if ($r['cfu_ric'] === '') $r['cfu_ric'] = $r['ins_cfu'] !== '' ? $r['ins_cfu'] : $r['cfu'];
+                    $r['cfu_int'] = $r['cfu_int'] === '' ? '0' : $r['cfu_int'];
+                } elseif ($r['esito'] === 'parziale') {
+                    if ($r['cfu_ric'] === '') $r['cfu_ric'] = $r['cfu'];
+                    if ($r['cfu_int'] === '' && $r['ins_cfu'] !== '' && $r['cfu_ric'] !== '') $r['cfu_int'] = $num(max(0, (float)$r['ins_cfu'] - (float)$r['cfu_ric']));
+                } else { $r['cfu_ric'] = '0'; $r['cfu_int'] = ''; }
+            }
+            $righe[] = $r;
+            if (count($righe) >= 80) break;
+        }
+        return ['tipo' => $tipo, 'righe' => $righe];
+    }
+}
+
+if (!function_exists('tabella_decisioni')) {
+    // Intestazioni e righe delle decisioni per il verbale, la pagina e l'Excel
+    function tabella_decisioni(array $d): array {
+        if (($d['tipo'] ?? '') === 'piano') {
+            return [['Insegnamento', 'CFU', 'Decisione'], array_map(fn($r) => [$r['richiesto'], $r['cfu'], ESITI_PIANO[$r['esito']] ?? ''], $d['righe'] ?? [])];
+        }
+        return [['Insegnamento sostenuto', 'CFU', 'Voto', 'S.S.D.', 'Insegnamento convalidato', 'CFU ins.', 'CFU riconosciuti', 'CFU da integrare', 'Convalida'],
+                array_map(fn($r) => [$r['richiesto'], $r['cfu'], $r['voto'], $r['ssd'], $r['esito'] === 'no' ? '—' : $r['ins'], $r['ins_cfu'], $r['cfu_ric'], $r['cfu_int'], ESITI_CONVALIDA[$r['esito']] ?? ''], $d['righe'] ?? [])];
+    }
+    function testo_decisioni(?string $json): string {
+        $d = json_decode((string)$json, true);
+        if (!is_array($d) || empty($d['righe'])) return '';
+        [, $righe] = tabella_decisioni($d);
+        return implode("\n", array_map(fn($r) => implode(' | ', array_filter($r, fn($x) => $x !== '')), $righe));
+    }
+}
+
+if (!function_exists('salva_decisioni_seduta')) {
+    // Esito, decisioni e delibera di una pratica in seduta
+    function salva_decisioni_seduta($conn, int $id, string $esito, ?array $decisioni, ?string $delibera): bool {
+        $esito = isset(ESITI_SEDUTA[$esito]) ? $esito : '';
+        $json = $decisioni && !empty($decisioni['righe']) ? json_encode(['tipo' => $decisioni['tipo'], 'righe' => $decisioni['righe']], JSON_UNESCAPED_UNICODE) : null;
+        if ($delibera === null) {
+            $st = $conn->prepare("UPDATE pratiche SET esito_seduta = ?, decisioni_json = ?, aggiornata_il = NOW() WHERE id = ?");
+            $st->bind_param("ssi", $esito, $json, $id);
+        } else {
+            $del = mb_substr(trim($delibera), 0, 5000);
+            $st = $conn->prepare("UPDATE pratiche SET esito_seduta = ?, decisioni_json = ?, delibera = ?, aggiornata_il = NOW() WHERE id = ?");
+            $st->bind_param("sssi", $esito, $json, $del, $id);
+        }
+        return $st->execute();
+    }
+}
+
+if (!function_exists('applica_esiti_seduta')) {
+    // A seduta conclusa: approvate → accolte, respinte → respinte (lo studente riceve l'email), rinviate → tolte dalla seduta
+    // (restano aperte per la prossima). Ritorna [accolte, respinte, rinviate].
+    function applica_esiti_seduta($conn, array $s, int $uid, string $autore_nome = ''): array {
+        $n = [0, 0, 0];
+        $quando = ($s['data'] ? ' del ' . date('d/m/Y', strtotime($s['data'])) : '');
+        $r = $conn->query("SELECT id, stato, esito_seduta FROM pratiche WHERE seduta_id = " . (int)$s['id'] . " AND esito_seduta <> ''");
+        foreach ($r ? $r->fetch_all(MYSQLI_ASSOC) : [] as $x) {
+            $id = (int)$x['id'];
+            if (in_array($x['esito_seduta'], ['approvata', 'approvata_mod'], true) && !in_array($x['stato'], ['accolta', 'chiusa'], true)) {
+                cambia_stato_pratica($conn, $id, 'accolta', 'Approvata dal Consiglio nella seduta' . $quando . '.', $uid, $autore_nome); $n[0]++;
+            } elseif ($x['esito_seduta'] === 'respinta' && $x['stato'] !== 'respinta') {
+                cambia_stato_pratica($conn, $id, 'respinta', 'Non approvata dal Consiglio nella seduta' . $quando . '.', $uid, $autore_nome); $n[1]++;
+            } elseif ($x['esito_seduta'] === 'rinviata') {
+                $conn->query("UPDATE pratiche SET seduta_id = NULL, esito_seduta = '' WHERE id = $id");
+                evento_pratica($conn, $id, 'messaggio', 'ufficio', $uid, null, 'Rinviata dal Consiglio nella seduta' . $quando . ': sarà esaminata nella prossima seduta.', null, null, false, $autore_nome); $n[2]++;
+            }
+        }
+        return $n;
+    }
+}
+
 if (!function_exists('verbale_modulo')) {
     // Come compare il modulo nel verbale: titolo della sezione, stile (scheda = un paragrafo per pratica con le sue tabelle,
     // elenco = una tabella con una riga per pratica), testo per ogni pratica con i segnaposto, delibera, colonne, raggruppamento
@@ -689,6 +1207,7 @@ if (!function_exists('verbale_modulo')) {
             'chiusura'  => (string)($v['chiusura'] ?? ''),
             'colonne'   => (string)($v['colonne'] ?? ''),
             'raggruppa' => (string)($v['raggruppa'] ?? ''),
+            'decisione' => isset(DECISIONI_SEDUTA[$v['decisione'] ?? '']) ? (string)($v['decisione'] ?? '') : '',
         ];
     }
 }
@@ -761,6 +1280,7 @@ if (!function_exists('corpo_pratiche_verbale')) {
                     foreach ($colonne as $col) {
                         $k = mb_strtolower($col);
                         $riga[] = match ($k) { 'cognome' => mb_strtoupper($p['cognome']), 'nome' => mb_strtoupper($p['nome']), 'matricola' => $p['matricola'], 'codice' => $p['codice'],
+                                               'esito' => ESITI_SEDUTA[$p['esito_seduta'] ?? ''][0] ?? '',
                                                'delibera' => (string)$p['delibera'], 'protocollo' => (string)($p['protocollo'] ?? ''), default => (string)($ris[$k]['valore'] ?? '') };
                     }
                     $gruppi[$g][] = $riga;
@@ -772,12 +1292,23 @@ if (!function_exists('corpo_pratiche_verbale')) {
             } else {
                 foreach ($lista as $p) {
                     $xml .= docx_p(testo_segnaposti_pratica($v['testo'], $p), ['al' => 'both', 'keep' => true]);
+                    // Decisioni prese in seduta (convalide o piano di studi): sostituiscono le tabelle degli esami dello studente
+                    $dec = json_decode((string)($p['decisioni_json'] ?? ''), true);
+                    $con_dec = is_array($dec) && !empty($dec['righe']);
                     foreach (array_merge(json_decode((string)$p['risposte_json'], true) ?: [], json_decode((string)($p['ufficio_json'] ?? ''), true) ?: []) as $r) {
                         if (($r['tipo'] ?? '') !== 'tabella' || empty($r['righe'])) continue;
+                        if ($con_dec && array_intersect(['insegnamento', 'insegnamento_dip'], array_map('tipo_colonna_da_nome', $r['colonne'] ?? []))) continue;
                         $xml .= docx_p($r['etichetta'], ['b' => true, 'sz' => 18, 'keep' => true, 'dopo' => 40]);
                         $xml .= docx_tabella($r['colonne'] ?? [], $r['righe'], ['sz' => count($r['colonne'] ?? []) > 8 ? 13 : 16]);
                     }
-                    $del = trim((string)$p['delibera']) !== '' ? (string)$p['delibera'] : $v['delibera'];
+                    if ($con_dec) {
+                        [$int_d, $righe_d] = tabella_decisioni($dec);
+                        $xml .= docx_p($dec['tipo'] === 'piano' ? 'Insegnamenti richiesti nel piano di studi' : 'Quadro delle convalide', ['b' => true, 'sz' => 18, 'keep' => true, 'dopo' => 40]);
+                        $xml .= docx_tabella($int_d, $righe_d, ['sz' => count($int_d) > 6 ? 14 : 17]);
+                    }
+                    $esito = (string)($p['esito_seduta'] ?? '');
+                    $del_esito = ['respinta' => 'Il Consiglio non approva la richiesta.', 'rinviata' => 'Il Consiglio rinvia l\'esame della richiesta alla prossima seduta.'][$esito] ?? '';
+                    $del = trim((string)$p['delibera']) !== '' ? (string)$p['delibera'] : ($del_esito !== '' ? $del_esito : $v['delibera']);
                     if (trim($del) !== '') $xml .= docx_p(testo_segnaposti_pratica($del, $p), ['al' => 'both', 'dopo' => 240]);
                 }
             }
@@ -804,7 +1335,18 @@ if (!function_exists('genera_verbale_pratiche')) {
             $x .= docx_p($quando . ' alle ore ' . ($s['ora_inizio'] ?: '____') . ', a seguito di convocazione si è riunito' . ($s['luogo'] !== '' ? ' presso ' . $s['luogo'] : '') . ', il ' . $s['organo'] . ', con il seguente o.d.g.:', ['al' => 'both']);
             foreach ($odg as $i => $t) $x .= docx_p(($i + 1) . ". " . $t, ['rientro' => 720, 'sporgente' => 360, 'dopo' => 0]);
             $x .= docx_p('', ['dopo' => 120]);
-            foreach (preg_split('/\R/', (string)$s['presenze']) as $riga) {
+            $pres = !empty($s['id']) ? array_filter(presenze_seduta($conn, $s), fn($r) => !empty($r['_salvata'])) : [];
+            if ($pres) {
+                // Presenze registrate per componente: gruppi per qualifica, PRESENTE / ASSENTE GIUSTIFICATO / ASSENTE INGIUSTIFICATO
+                $g_corr = null;
+                foreach ($pres as $r) {
+                    if ($r['qualifica'] !== $g_corr) { $g_corr = $r['qualifica']; if ($g_corr !== '') $x .= docx_p($g_corr, ['b' => true, 'dopo' => 60, 'keep' => true]); }
+                    $x .= docx_p($r['nominativo'] . "\t" . mb_strtoupper(STATI_PRESENZA[$r['stato']] ?? $r['stato']), ['tab' => 9700, 'dopo' => 0]);
+                }
+                $np = riepilogo_presenze($pres);
+                $x .= docx_p('', ['dopo' => 60]);
+                $x .= docx_p('Presenti: ' . $np['P'] . ' – assenti giustificati: ' . $np['AG'] . ' – assenti ingiustificati: ' . $np['AI'] . '.', ['i' => true]);
+            } else foreach (preg_split('/\R/', (string)$s['presenze']) as $riga) {
                 $riga = rtrim($riga);
                 if (trim($riga) === '') { $x .= docx_p('', ['dopo' => 0]); continue; }
                 $parti = preg_split('/\s*(\t|\|)\s*|\s{3,}/', trim($riga), 2);
@@ -835,10 +1377,10 @@ if (!function_exists('genera_excel_pratiche')) {
     // Excel delle pratiche: un foglio con tutte (colonne di tutti i moduli) e un foglio per ogni modulo
     function genera_excel_pratiche($conn, array $pratiche): ?string {
         $prot = fn($p) => trim(($p['protocollo'] ?? '') . (!empty($p['protocollo_data']) ? ' del ' . date('d/m/Y', strtotime($p['protocollo_data'])) : ''));
-        $fisse = ['Codice', 'Protocollo', 'Modulo','Categoria', 'Stato', 'Inviata il', 'Aggiornata il', 'Cognome', 'Nome', 'Matricola', 'Email', 'Seduta', 'Delibera'];
+        $fisse = ['Codice', 'Protocollo', 'Modulo','Categoria', 'Stato', 'Inviata il', 'Aggiornata il', 'Cognome', 'Nome', 'Matricola', 'Email', 'Seduta', 'Esito in seduta', 'Decisioni', 'Delibera'];
         $base = fn($p) => [$p['codice'], $prot($p), $p['modulo_titolo'], $p['categoria'], STATI_PRATICA[$p['stato']][0] ?? $p['stato'], date('d/m/Y H:i', strtotime($p['creata_il'])),
                            $p['aggiornata_il'] ? date('d/m/Y H:i', strtotime($p['aggiornata_il'])) : '', $p['cognome'], $p['nome'], $p['matricola'], $p['email'],
-                           $p['seduta_data'] ? date('d/m/Y', strtotime($p['seduta_data'])) : '', (string)$p['delibera']];
+                           $p['seduta_data'] ? date('d/m/Y', strtotime($p['seduta_data'])) : '', ESITI_SEDUTA[$p['esito_seduta'] ?? ''][0] ?? '', testo_decisioni($p['decisioni_json'] ?? null), (string)$p['delibera']];
         $etichette = function (array $lista) {
             $et = [];
             foreach ($lista as $p) foreach (risposte_pratica_tutte($p) as $k => $r) $et[$k] = $r['etichetta'];
@@ -853,7 +1395,7 @@ if (!function_exists('genera_excel_pratiche')) {
             }
             return $out;
         };
-        $larg = [13, 18, 30, 16,14, 16, 16, 18, 18, 12, 28, 12, 40];
+        $larg = [13, 18, 30, 16, 14, 16, 16, 18, 18, 12, 28, 12, 16, 50, 40];
         $et = $etichette($pratiche);
         $fogli = ['Tutte le pratiche' => ['intestazioni' => array_merge($fisse, array_values($et)), 'righe' => $righe_di($pratiche, $et), 'larghezze' => array_merge($larg, array_fill(0, count($et), 30))]];
         $per_modulo = [];

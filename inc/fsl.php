@@ -65,20 +65,20 @@ if (!function_exists('html_istruzioni_convenzione')) {
         // nel modulo di prenotazione (senza codice) si annuncia, dopo la prenotazione c'è il link
         $online = empty($cfg['conv_url_modello']) && is_file(RADICE_SITO . '/modelli_documenti/convenzione_precompilabile.docx');
         if ($online && $codice === '')
-            return "<p style='margin:0 0 6px;'>$frase</p><p style='margin:0;'><strong>Al termine della prenotazione</strong> potrai compilare online la <strong>Convenzione</strong> e l'<strong>Allegato A</strong> con un modulo guidato: trovi il link nella pagina di conferma e nell'email. Il Dirigente li firma digitalmente e la scuola li invia via PEC a <a href='mailto:" . $h($c['pec']) . "'$a>" . $h($c['pec']) . "</a>.</p>";
+            return "<p style='margin:0 0 6px;'>$frase</p><p style='margin:0;'><strong>Al termine della prenotazione</strong> potrai compilare online la <strong>Convenzione</strong> e l'<strong>Allegato A</strong> con un modulo guidato: trovi il link nella pagina di conferma e nell'email. Il Dirigente li firma digitalmente in PAdES (PDF firmato, non .p7m) e la scuola li invia via PEC a <a href='mailto:" . $h($c['pec']) . "'$a>" . $h($c['pec']) . "</a>.</p>";
         if ($online) {
             $url_on = url_base_sito() . '/convenzione_online.php?code=' . urlencode($codice);
             $bottone = $per_email ? "<p style='margin:12px 0;'><a href='" . $h($url_on) . "' style='background:#B30000;color:#fff;padding:10px 18px;text-decoration:none;border-radius:6px;font-weight:bold;'>Compila online la Convenzione e l'Allegato A</a></p>"
                                   : "<p style='margin:8px 0;'><a href='" . $h($url_on) . "' class='btn btn-danger btn-sm fw-bold'><i class='fa fa-file-signature me-1'></i>Compila online la Convenzione e l'Allegato A</a></p>";
             return "<p style='margin:0 0 6px;'>$frase Compila online i documenti con un modulo guidato (dati della scuola e del Dirigente, attività da inserire nell'Allegato A, logo della scuola): li scarichi già pronti in Word.</p>"
                  . $bottone
-                 . "<p style='margin:0;'>Poi il Dirigente li <strong>firma digitalmente</strong> e la scuola li invia via PEC a <a href='mailto:" . $h($c['pec']) . "'$a>" . $h($c['pec']) . "</a>. "
+                 . "<p style='margin:0;'>Poi il Dirigente li <strong>firma digitalmente in PAdES</strong> (PDF firmato, non .p7m) e la scuola li invia via PEC a <a href='mailto:" . $h($c['pec']) . "'$a>" . $h($c['pec']) . "</a>. "
                  . ($in_attesa ? "Appena riceviamo la convenzione confermiamo la prenotazione e ti avvisiamo per email." : "Se la scuola l'ha già inviata, puoi ignorare questo messaggio.")
                  . " <span style='font-size:.9em;'>Preferisci i modelli vuoti? <a href='" . $h($c['modello']) . "'" . ($per_email ? " style='color:#B30000;'" : '') . ">Convenzione</a> · <a href='" . $h($c['allegato']) . "'" . ($per_email ? " style='color:#B30000;'" : '') . ">Allegato A</a></span></p>";
         }
         return "<p style='margin:0 0 6px;'>$frase Compila i modelli:</p>"
              . "<ul style='margin:0 0 6px;'><li>$voce_conv</li><li>$voce_all</li></ul>"
-             . "<p style='margin:0;'>e inviali <strong>firmati digitalmente</strong> alla PEC <a href='mailto:" . $h($c['pec']) . "'$a>" . $h($c['pec']) . "</a>. "
+             . "<p style='margin:0;'>e inviali <strong>firmati digitalmente in PAdES</strong> (PDF firmato, non .p7m) alla PEC <a href='mailto:" . $h($c['pec']) . "'$a>" . $h($c['pec']) . "</a>. "
              . ($in_attesa ? "Appena riceviamo la convenzione confermiamo la prenotazione e ti avvisiamo per email.</p>" : "Se la scuola l'ha già inviata, puoi ignorare questo messaggio.</p>");
     }
 }

@@ -21,7 +21,7 @@ if (!defined('MODULI_PORTALE')) define('MODULI_PORTALE', [
     'calendari'    => ['nome' => 'Prenotazioni e risorse', 'icona' => 'fa-calendar-days', 'colore' => '#7c3aed',
                        'descr' => 'Aule, laboratori e sportelli a slot, gruppi delle attività degli insegnamenti'],
     'didattica'    => ['nome' => 'Didattica', 'icona' => 'fa-graduation-cap', 'colore' => '#047857',
-                       'descr' => 'Modulistica, moduli online e pratiche degli studenti'],
+                       'descr' => 'Modulistica, moduli online e pratiche degli studenti, sedute dei consigli, tutorato'],
     'portale'      => ['nome' => 'Gestione del portale', 'icona' => 'fa-sliders', 'colore' => '#334155',
                        'descr' => 'Anagrafi, testata e home, menu, utenti e abilitazioni, sistema e registri'],
 ]);
@@ -29,7 +29,7 @@ if (!defined('MODULI_PORTALE')) define('MODULI_PORTALE', [
 // Pagine del pannello che appartengono a un modulo senza aree (le altre seguono l'area corrente)
 if (!defined('PAGINE_MODULO')) define('PAGINE_MODULO', [
     'fsl.php' => 'orientamento', 'convenzione_file.php' => 'orientamento',
-    'didattica.php' => 'didattica',
+    'didattica.php' => 'didattica', 'tutorato.php' => 'didattica',
     'testata.php' => 'portale', 'menu.php' => 'portale', 'utenti.php' => 'portale', 'sistema.php' => 'portale', 'audit_log.php' => 'portale',
     'log_accessi.php' => 'portale', 'anagrafe_personale.php' => 'portale', 'anagrafe_docenti.php' => 'portale', 'anagrafe_pta.php' => 'portale',
     'anagrafe_insegnamenti.php' => 'portale', 'scuole.php' => 'portale', 'nuova_area.php' => 'portale',

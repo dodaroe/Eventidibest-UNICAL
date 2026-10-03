@@ -85,6 +85,30 @@ if (!function_exists('imposta_cookie_uscito')) {
 }
 
 // 1. GESTIONE AUTENTICAZIONE SSO UNIFICATA (Con Auto-Riparazione Email)
+if (!function_exists('metadati_accesso_saml')) {
+    // Come si è autenticata la persona (dall'IdP SAML): SPID (con il livello), CIE o credenziali di Ateneo, con identificativi
+    // e ora dell'autenticazione. Si conservano in sessione ($_SESSION['auth_meta']) e finiscono nella lettera di incarico
+    // confermata dallo studente. Da chiamare prima di cleanup(): legge la sessione di SimpleSAML.
+    function metadati_accesso_saml($as, array $attributes): array {
+        $dato = function (string $k) use ($as) { try { return $as->getAuthData($k); } catch (\Throwable $e) { return null; } };
+        $a1 = fn(string $k) => trim((string)(($attributes[$k][0] ?? '') ?: ''));
+        $idp = (string)($dato('saml:sp:IdP') ?? '');
+        $ctx = $dato('saml:sp:AuthnContext');
+        $ctx = is_array($ctx) ? implode(' ', $ctx) : (string)($ctx ?? '');
+        $ist = $dato('AuthnInstant');
+        $spid_code = $a1('spidCode');
+        $tutto = mb_strtolower($idp . ' ' . $ctx . ' ' . implode(' ', array_keys($attributes)));
+        $metodo = 'ateneo';
+        if (str_contains($tutto, 'cie') && (str_contains($tutto, 'servizicie') || str_contains($tutto, 'idserver') || str_contains($tutto, '/cie'))) $metodo = 'cie';
+        elseif ($spid_code !== '' || str_contains($tutto, 'spid')) $metodo = 'spid';
+        $livello = preg_match('/SpidL([123])/i', $ctx, $m) ? (int)$m[1] : null;
+        return ['metodo' => $metodo, 'livello' => $livello, 'idp' => mb_substr($idp, 0, 255), 'contesto' => mb_substr($ctx, 0, 255),
+                'spid_code' => mb_substr($spid_code, 0, 64), 'cf' => strtoupper(str_replace('TINIT-', '', $a1('fiscalNumber') ?: $a1('codice_fiscale'))),
+                'sessione' => mb_substr((string)($dato('saml:sp:SessionIndex') ?? ''), 0, 120),
+                'istante' => is_numeric($ist) ? date('c', (int)$ist) : date('c'), 'ip' => (string)($_SERVER['REMOTE_ADDR'] ?? '')];
+    }
+}
+
 if (!function_exists('sync_sso_user')) {
     function sync_sso_user($conn) {
         if (!empty($_SESSION['utente_id'])) return true;
@@ -112,6 +136,7 @@ if (!function_exists('sync_sso_user')) {
             }
 
             $attributes = $as->getAttributes();
+            $meta_accesso = metadati_accesso_saml($as, $attributes);
 
             // Ripristina la nostra sessione PHP (pattern LibreBooking adSAML::Cleanup)
             \SimpleSAML\Session::getSessionFromRequest()->cleanup();
@@ -163,6 +188,7 @@ if (!function_exists('sync_sso_user')) {
             $_SESSION['utente_email']           = $u_info['email'];
             $_SESSION['utente_ruolo_id']        = (int)$u_info['ruolo_id'];
             $_SESSION['utente_ruoli_secondari'] = $u_info['ruoli_secondari'] ?? '';
+            $_SESSION['auth_meta']              = $meta_accesso;
 
             if (empty($_SESSION['accesso_sso_loggato'])) {
                 registra_accesso_sso($conn, (int)$u_info['id'], $u_info['email'], $u_info['nome'], $u_info['cognome'], 'sso');

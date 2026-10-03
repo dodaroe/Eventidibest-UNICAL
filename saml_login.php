@@ -33,6 +33,8 @@ if (file_exists($simplesaml_path)) {
 
     // Attributi letti PRIMA di cleanup(), come in sync_sso_user(): dopo, la sessione SimpleSAML viene chiusa
     $attributes = $as->getAttributes();
+    // Metodo di autenticazione (SPID con livello, CIE, credenziali di Ateneo): serve per le conferme con SPID/CIE (lettere di incarico)
+    $meta_accesso = function_exists('metadati_accesso_saml') ? metadati_accesso_saml($as, $attributes) : [];
 
     // Ripristina la nostra sessione PHP (pattern LibreBooking adSAML::Cleanup)
     \SimpleSAML\Session::getSessionFromRequest()->cleanup();
@@ -140,6 +142,7 @@ if (file_exists($simplesaml_path)) {
         $_SESSION['utente_email']    = $u_info['email'];
         $_SESSION['utente_ruolo_id'] = (int)$u_info['ruolo_id'];
         $_SESSION['utente_ruoli_secondari'] = $u_info['ruoli_secondari'] ?? '';
+        $_SESSION['auth_meta']       = $meta_accesso;
 
         // Registra accesso (usa registra_accesso_sso che crea la tabella autonomamente)
         if (empty($_SESSION['accesso_sso_loggato']) && function_exists('registra_accesso_sso')) {

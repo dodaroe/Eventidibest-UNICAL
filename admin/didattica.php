@@ -17,19 +17,109 @@ $uid = (int)$u_id_curr;
 $ids_post = fn() => array_values(array_filter(array_map('intval', (array)($_POST['ids'] ?? []))));
 $autore_nome = nome_autore_ufficio($conn, $utente_admin);
 $io_operatore = operatore_ufficio($conn, 0, $utente_admin);
+// Referenti dei consigli (senza gli altri permessi della Didattica): solo le sedute dei loro consigli
+$solo_ref = !$puo_didattica_tutto;
+if ($solo_ref) { $tab = 'sedute'; $autore_nome = trim(($utente_admin['nome'] ?? '') . ' ' . ($utente_admin['cognome'] ?? '')) . ' · Referente del consiglio'; }
+$consigli = consigli_didattica($conn);
+$puo_consiglio = fn(int $cid) => $puo_didattica_tutto || in_array($cid, $consigli_referente, true);
+$puo_seduta = fn(?array $s) => $s && ($puo_didattica_tutto || in_array((int)$s['consiglio_id'], $consigli_referente, true));
 
 // ==============================================================================
 // AZIONI
 // ==============================================================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify($_POST['csrf_token'] ?? '');
+    // I referenti dei consigli fanno solo le azioni delle sedute (ognuna controlla anche il consiglio)
+    if ($solo_ref && !array_intersect(array_keys($_POST), ['salva_seduta', 'elimina_seduta', 'assegna_seduta', 'salva_presenze', 'salva_decisioni', 'applica_esiti', 'aggiungi_persona_consiglio', 'togli_persona_consiglio', 'salva_qualifiche'])) nega_accesso();
+
+    // ── Consigli: dati, referenti (Ufficio didattico) e componenti (anche i referenti) ──
+    if (isset($_POST['salva_consiglio']) && !$solo_ref) {
+        $cid = (int)($_POST['consiglio_id'] ?? 0);
+        $f = [];
+        foreach (['nome' => 500, 'coordinatore' => 200, 'segretario' => 200, 'luogo' => 255, 'odg' => 5000] as $k => $max) $f[$k] = mb_substr(trim((string)($_POST['c_' . $k] ?? '')), 0, $max);
+        $corsi_c = json_encode(array_values(array_filter(array_map('trim', (array)($_POST['c_corsi'] ?? [])))), JSON_UNESCAPED_UNICODE);
+        $att_c = isset($_POST['c_attivo']) ? 1 : 0; $ord_c = (int)($_POST['c_ordine'] ?? 0);
+        if ($f['nome'] === '') flash_set("Scrivi il nome del consiglio.", 'danger');
+        else {
+            if ($cid) { $st = $conn->prepare("UPDATE didattica_consigli SET nome=?, corsi=?, coordinatore=?, segretario=?, luogo=?, odg=?, attivo=?, ordine=? WHERE id=?"); $st->bind_param("ssssssiii", $f['nome'], $corsi_c, $f['coordinatore'], $f['segretario'], $f['luogo'], $f['odg'], $att_c, $ord_c, $cid); }
+            else { $st = $conn->prepare("INSERT INTO didattica_consigli (nome, corsi, coordinatore, segretario, luogo, odg, attivo, ordine) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"); $st->bind_param("ssssssii", $f['nome'], $corsi_c, $f['coordinatore'], $f['segretario'], $f['luogo'], $f['odg'], $att_c, $ord_c); }
+            $st->execute();
+            if (!$cid) $cid = (int)$conn->insert_id;
+            registra_log_audit($conn, "Consiglio salvato", ["Consiglio" => $f['nome']]);
+            flash_set("Consiglio salvato.");
+        }
+        admin_redirect("$base&tab=sedute&consiglio=$cid&r=" . time());
+    }
+    if (isset($_POST['aggiungi_persona_consiglio'])) {
+        $cid = (int)($_POST['consiglio_id'] ?? 0); $ruolo_p = ($_POST['ruolo_persona'] ?? '') === 'referente' ? 'referente' : 'componente';
+        if (!$puo_consiglio($cid) || ($ruolo_p === 'referente' && $solo_ref)) nega_accesso();
+        $err = aggiungi_persona_consiglio($conn, $cid, $ruolo_p, (string)($_POST['persona_id'] ?? ''), (string)($_POST['qualifica'] ?? ''), (string)($_POST['nominativo'] ?? ''), (string)($_POST['email_persona'] ?? ''));
+        if (!$err) registra_log_audit($conn, "Consiglio: " . $ruolo_p . " aggiunto", ["Consiglio" => $cid, "Persona" => $_POST['persona_id'] ?: ($_POST['nominativo'] ?? '')]);
+        flash_set($err ?? ($ruolo_p === 'referente' ? "Referente aggiunto: entra nel pannello Didattica con le credenziali Unical e vede le sedute del consiglio." : "Componente aggiunto: lo trovi nelle presenze delle sedute."), $err ? 'danger' : 'success');
+        admin_redirect("$base&tab=sedute&consiglio=$cid&r=" . time());
+    }
+    if (isset($_POST['togli_persona_consiglio'])) {
+        $pid_c = (int)$_POST['togli_persona_consiglio'];
+        $x = $conn->query("SELECT * FROM didattica_consigli_persone WHERE id = $pid_c")->fetch_assoc();
+        if (!$x || !$puo_consiglio((int)$x['consiglio_id']) || ($x['ruolo'] === 'referente' && $solo_ref)) nega_accesso();
+        $conn->query("DELETE FROM didattica_consigli_persone WHERE id = $pid_c");
+        registra_log_audit($conn, "Consiglio: persona tolta", ["Consiglio" => $x['consiglio_id'], "Persona" => $x['nominativo']]);
+        flash_set($x['nominativo'] . " tolto dal consiglio (resta nelle sedute già registrate).", 'warning');
+        admin_redirect("$base&tab=sedute&consiglio=" . (int)$x['consiglio_id'] . "&r=" . time());
+    }
+    if (isset($_POST['salva_qualifiche'])) {
+        $cid = (int)($_POST['consiglio_id'] ?? 0);
+        if (!$puo_consiglio($cid)) nega_accesso();
+        $st = $conn->prepare("UPDATE didattica_consigli_persone SET qualifica = ?, ordine = ? WHERE id = ? AND consiglio_id = ? AND ruolo = 'componente'");
+        foreach ((array)($_POST['qualifica_p'] ?? []) as $pid_c => $q_c) {
+            $q_c = mb_substr(trim((string)$q_c), 0, 150); $o_c = (int)($_POST['ordine_p'][$pid_c] ?? 0); $pid_c = (int)$pid_c;
+            $st->bind_param("siii", $q_c, $o_c, $pid_c, $cid); $st->execute();
+        }
+        flash_set("Gruppi e ordine dei componenti salvati.");
+        admin_redirect("$base&tab=sedute&consiglio=$cid&r=" . time());
+    }
+
+    // ── Seduta: presenze, esiti e decisioni sulle pratiche ──
+    if (isset($_POST['salva_presenze'])) {
+        $sed = seduta_didattica($conn, (int)($_POST['seduta_id'] ?? 0));
+        if (!$puo_seduta($sed)) nega_accesso();
+        $n = salva_presenze_seduta($conn, $sed, array_map('strval', (array)($_POST['presenza'] ?? [])));
+        registra_log_audit($conn, "Seduta: presenze salvate", ["Seduta" => $sed['id'], "Componenti" => $n]);
+        flash_set("Presenze salvate ($n componenti): sono nel verbale.");
+        admin_redirect("$base&tab=sedute&id=" . (int)$sed['id'] . "&r=" . time() . "#presenze");
+    }
+    if (isset($_POST['salva_decisioni'])) {
+        $id = (int)($_POST['pratica_id'] ?? 0); $p = pratica($conn, $id);
+        $sed = $p && $p['seduta_id'] ? seduta_didattica($conn, (int)$p['seduta_id']) : null;
+        if (!$puo_seduta($sed)) nega_accesso();
+        $m = modulo_didattica($conn, (int)$p['modulo_id']); $tipo_d = decisione_modulo($m);
+        $dec = $tipo_d !== '' ? leggi_decisioni_post($conn, $tipo_d, $_POST) : null;
+        salva_decisioni_seduta($conn, $id, (string)($_POST['esito_seduta'] ?? ''), $dec, isset($_POST['delibera']) ? (string)$_POST['delibera'] : null);
+        registra_log_audit($conn, "Seduta: decisioni sulla pratica", ["Pratica" => $p['codice'], "Esito" => $_POST['esito_seduta'] ?? '']);
+        flash_set("Decisioni salvate per " . trim($p['cognome'] . ' ' . $p['nome']) . ".");
+        admin_redirect("$base&tab=sedute&id=" . (int)$sed['id'] . "&r=" . time() . "#pr" . $id);
+    }
+    if (isset($_POST['applica_esiti'])) {
+        $sed = seduta_didattica($conn, (int)($_POST['seduta_id'] ?? 0));
+        if (!$puo_seduta($sed)) nega_accesso();
+        [$na, $nr, $nn] = applica_esiti_seduta($conn, $sed, $uid, $autore_nome);
+        registra_log_audit($conn, "Seduta: esiti applicati", ["Seduta" => $sed['id'], "Accolte" => $na, "Respinte" => $nr, "Rinviate" => $nn]);
+        flash_set("Esiti applicati: $na accolte, $nr respinte (gli studenti ricevono l'email), $nn rinviate alla prossima seduta.");
+        admin_redirect("$base&tab=sedute&id=" . (int)$sed['id'] . "&r=" . time());
+    }
+    if (isset($_POST['richiedi_operatore'])) {
+        $id = (int)$_POST['pratica_id'];
+        $err = richiedi_a_operatore($conn, $id, (int)($_POST['operatore_prec'] ?? 0), (string)($_POST['testo_operatore'] ?? ''), $uid, $autore_nome);
+        flash_set($err ?? "Richiesta inviata: l'operatore riceve un'email e integra la pratica.", $err ? 'danger' : 'success');
+        admin_redirect("$base&tab=pratiche&id=$id&r=" . time());
+    }
 
     // ── Pratiche: stato, integrazioni, messaggi, attività, iter, istruttoria, seduta ──
     if (isset($_POST['stato_pratica'])) {
         $id = (int)$_POST['pratica_id'];
         $ok = cambia_stato_pratica($conn, $id, (string)$_POST['stato_pratica'], mb_substr(trim((string)($_POST['nota'] ?? '')), 0, 2000), $uid, $autore_nome);
         if ($ok) registra_log_audit($conn, "Pratica: cambio di stato", ["Pratica" => $id, "Stato" => $_POST['stato_pratica']]);
-        flash_set($ok ? "Stato aggiornato: lo studente riceve un'email." : "Stato non valido.", $ok ? 'success' : 'danger');
+        flash_set($ok ? (in_array($_POST['stato_pratica'], ['accolta', 'respinta', 'chiusa'], true) ? "Stato aggiornato: lo studente riceve un'email." : "Stato aggiornato.") : "Stato non valido.", $ok ? 'success' : 'danger');
         admin_redirect("$base&tab=pratiche&id=$id&r=" . time());
     }
     if (isset($_POST['richiedi_integrazione'])) {
@@ -78,6 +168,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if (isset($_POST['assegna_seduta'])) {
         $ids = $ids_post(); $sed = (int)($_POST['seduta_id'] ?? 0);
+        if ($solo_ref) {
+            // Referente: solo verso le sedute del suo consiglio e solo pratiche libere o già nelle sue sedute
+            if ($sed && !$puo_seduta(seduta_didattica($conn, $sed))) nega_accesso();
+            $mie_s = array_column($conn->query("SELECT id FROM didattica_sedute WHERE consiglio_id IN (" . implode(',', array_map('intval', $consigli_referente ?: [0])) . ")")->fetch_all(MYSQLI_ASSOC), 'id');
+            $ids = array_values(array_filter($ids, function ($i) use ($conn, $mie_s, $sed) { $x = pratica($conn, $i); return $x && ($x['seduta_id'] === null ? $sed > 0 : in_array((int)$x['seduta_id'], array_map('intval', $mie_s), true)); }));
+        }
         if ($ids && ($sed === 0 || seduta_didattica($conn, $sed))) {
             $conn->query("UPDATE pratiche SET seduta_id = " . ($sed ?: 'NULL') . " WHERE id IN (" . implode(',', $ids) . ")");
             flash_set(count($ids) . ($sed ? " pratiche portate alla seduta." : " pratiche tolte dalla seduta."));
@@ -93,22 +189,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($_POST['data'] ?? '')) ? $_POST['data'] : null;
         $oi = preg_match('/^\d{2}:\d{2}$/', (string)($_POST['ora_inizio'] ?? '')) ? $_POST['ora_inizio'] : '';
         $of = preg_match('/^\d{2}:\d{2}$/', (string)($_POST['ora_fine'] ?? '')) ? $_POST['ora_fine'] : '';
+        $cons_s = (int)($_POST['consiglio_id'] ?? 0) ?: null;
+        if ($cons_s && !isset($consigli[$cons_s])) $cons_s = null;
+        if ($id && !$puo_seduta(seduta_didattica($conn, $id)) && !$puo_didattica_tutto) nega_accesso();
+        if ($solo_ref && !in_array((int)$cons_s, $consigli_referente, true)) nega_accesso();
+        if ($f['organo'] === '' && $cons_s) $f['organo'] = $consigli[$cons_s]['nome'];
         if ($f['organo'] === '') { flash_set("Indica l'organo (es. Consiglio del Corso di Laurea in …).", 'danger'); admin_redirect("$base&tab=sedute&" . ($id ? "modifica=$id" : "nuova=1")); }
         if ($id) {
-            $st = $conn->prepare("UPDATE didattica_sedute SET organo=?, anno_accademico=?, data=?, ora_inizio=?, ora_fine=?, luogo=?, odg=?, presenze=?, segretario=?, coordinatore=? WHERE id=?");
-            $st->bind_param("ssssssssssi", $f['organo'], $f['anno_accademico'], $data, $oi, $of, $f['luogo'], $f['odg'], $f['presenze'], $f['segretario'], $f['coordinatore'], $id);
+            $st = $conn->prepare("UPDATE didattica_sedute SET organo=?, anno_accademico=?, data=?, ora_inizio=?, ora_fine=?, luogo=?, odg=?, presenze=?, segretario=?, coordinatore=?, consiglio_id=? WHERE id=?");
+            $st->bind_param("ssssssssssii", $f['organo'], $f['anno_accademico'], $data, $oi, $of, $f['luogo'], $f['odg'], $f['presenze'], $f['segretario'], $f['coordinatore'], $cons_s, $id);
         } else {
-            $st = $conn->prepare("INSERT INTO didattica_sedute (organo, anno_accademico, data, ora_inizio, ora_fine, luogo, odg, presenze, segretario, coordinatore) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-            $st->bind_param("ssssssssss", $f['organo'], $f['anno_accademico'], $data, $oi, $of, $f['luogo'], $f['odg'], $f['presenze'], $f['segretario'], $f['coordinatore']);
+            $st = $conn->prepare("INSERT INTO didattica_sedute (organo, anno_accademico, data, ora_inizio, ora_fine, luogo, odg, presenze, segretario, coordinatore, consiglio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            $st->bind_param("ssssssssssi", $f['organo'], $f['anno_accademico'], $data, $oi, $of, $f['luogo'], $f['odg'], $f['presenze'], $f['segretario'], $f['coordinatore'], $cons_s);
         }
         $st->execute();
         if (!$id) $id = (int)$conn->insert_id;
         registra_log_audit($conn, "Seduta del Consiglio salvata", ["Organo" => $f['organo'], "Data" => $data]);
-        flash_set("Seduta salvata: ora porta le pratiche e scarica il verbale.");
+        flash_set($cons_s ? "Seduta salvata: segna le presenze, porta le pratiche e scarica il verbale." : "Seduta salvata: ora porta le pratiche e scarica il verbale.");
         admin_redirect("$base&tab=sedute&id=$id");
     }
     if (isset($_POST['elimina_seduta'])) {
         $id = (int)$_POST['elimina_seduta'];
+        if (!$puo_seduta(seduta_didattica($conn, $id))) nega_accesso();
+        $conn->query("DELETE FROM didattica_sedute_presenze WHERE seduta_id = $id");
         $conn->query("UPDATE pratiche SET seduta_id = NULL WHERE seduta_id = $id");
         $conn->query("DELETE FROM didattica_sedute WHERE id = $id");
         flash_set("Seduta eliminata (le pratiche restano, senza seduta).", 'warning');
@@ -133,12 +236,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $campi = [];
         foreach ((array)($_POST['c_etichetta'] ?? []) as $i => $et) {
             $et = trim((string)$et); if ($et === '') continue;
-            $campi[] = ['etichetta' => $et, 'tipo' => (string)($_POST['c_tipo'][$i] ?? 'text'), 'opzioni' => (string)($_POST['c_opzioni'][$i] ?? ''),
-                        'obbligatorio' => ($_POST['c_obbl'][$i] ?? '0') === '1', 'ufficio' => ($_POST['c_uff'][$i] ?? '0') === '1', 'aiuto' => (string)($_POST['c_aiuto'][$i] ?? '')];
+            $campo = ['etichetta' => $et, 'tipo' => (string)($_POST['c_tipo'][$i] ?? 'text'), 'opzioni' => (string)($_POST['c_opzioni'][$i] ?? ''),
+                      'obbligatorio' => ($_POST['c_obbl'][$i] ?? '0') === '1', 'ufficio' => ($_POST['c_uff'][$i] ?? '0') === '1', 'aiuto' => (string)($_POST['c_aiuto'][$i] ?? '')];
+            // Logica: "mostra solo se" e "compila in automatico se" (l'altro campo è indicato con la sua domanda)
+            $rif = trim((string)($_POST['c_cond_campo'][$i] ?? ''));
+            if ($rif !== '' && isset(OPERATORI_CONDIZIONE[$_POST['c_cond_op'][$i] ?? ''])) $campo['cond'] = ['campo' => $rif, 'op' => $_POST['c_cond_op'][$i], 'valore' => (string)($_POST['c_cond_val'][$i] ?? '')];
+            $rif = trim((string)($_POST['c_auto_campo'][$i] ?? ''));
+            if ($rif !== '' && isset(OPERATORI_CONDIZIONE[$_POST['c_auto_op'][$i] ?? ''])) $campo['auto'] = ['campo' => $rif, 'op' => $_POST['c_auto_op'][$i], 'valore' => (string)($_POST['c_auto_val'][$i] ?? ''), 'imposta' => (string)($_POST['c_auto_imposta'][$i] ?? '')];
+            $campi[] = $campo;
         }
         $campi_json = $campi ? json_encode($campi, JSON_UNESCAPED_UNICODE) : null;
         $verbale = [];
-        foreach (['sezione' => 200, 'stile' => 10, 'intro' => 3000, 'testo' => 3000, 'delibera' => 3000, 'chiusura' => 3000, 'colonne' => 500, 'raggruppa' => 200] as $k => $max) $verbale[$k] = mb_substr(trim((string)($_POST['v_' . $k] ?? '')), 0, $max);
+        foreach (['sezione' => 200, 'stile' => 10, 'intro' => 3000, 'testo' => 3000, 'delibera' => 3000, 'chiusura' => 3000, 'colonne' => 500, 'raggruppa' => 200, 'decisione' => 20] as $k => $max) $verbale[$k] = mb_substr(trim((string)($_POST['v_' . $k] ?? '')), 0, $max);
         $verbale_json = json_encode($verbale, JSON_UNESCAPED_UNICODE);
         $iter = [];
         foreach ((array)($_POST['iter'] ?? []) as $x) if (($id_u = ufficio_didattica_id($conn, (int)$x)) && !(int)(uffici_didattica($conn)[$id_u]['smista'] ?? 0)) $iter[] = $id_u;
@@ -244,7 +353,8 @@ $moduli = $conn->query("SELECT m.*, (SELECT COUNT(*) FROM pratiche p WHERE p.mod
                         FROM didattica_moduli m ORDER BY m.categoria, m.ordine, m.titolo")->fetch_all(MYSQLI_ASSOC);
 $categorie = array_values(array_unique(array_column($moduli, 'categoria')));
 $n_aperte = (int)$conn->query("SELECT COUNT(*) n FROM pratiche WHERE stato IN ('inviata', 'in_lavorazione', 'integrazione')")->fetch_assoc()['n'];
-$sedute = $conn->query("SELECT s.*, (SELECT COUNT(*) FROM pratiche p WHERE p.seduta_id = s.id) AS n_pratiche FROM didattica_sedute s ORDER BY s.data DESC, s.id DESC")->fetch_all(MYSQLI_ASSOC);
+$sedute = $conn->query("SELECT s.*, (SELECT COUNT(*) FROM pratiche p WHERE p.seduta_id = s.id) AS n_pratiche FROM didattica_sedute s"
+                       . ($solo_ref ? " WHERE s.consiglio_id IN (" . implode(',', array_map('intval', $consigli_referente ?: [0])) . ")" : '') . " ORDER BY s.data DESC, s.id DESC")->fetch_all(MYSQLI_ASSOC);
 $sedute_future = array_values(array_filter($sedute, fn($s) => !$s['data'] || $s['data'] >= date('Y-m-d', strtotime('-60 days'))));
 $operatori = operatori_ufficio($conn);
 
@@ -252,7 +362,7 @@ $operatori = operatori_ufficio($conn);
 $f_stato = isset(STATI_PRATICA[$_GET['stato'] ?? '']) ? $_GET['stato'] : (in_array($_GET['stato'] ?? '', ['tutte', 'aperte'], true) ? $_GET['stato'] : 'aperte');
 $f_mod = (int)($_GET['modulo'] ?? 0); $f_q = mb_substr(trim((string)($_GET['q'] ?? '')), 0, 80);
 $f_sed = (string)($_GET['seduta'] ?? '');
-$f_car = in_array($_GET['carico'] ?? '', ['me', 'smistare'], true) ? $_GET['carico'] : '';
+$f_car = in_array($_GET['carico'] ?? '', ['me', 'smistare', 'seguite'], true) ? $_GET['carico'] : '';
 $f_dal = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($_GET['dal'] ?? '')) ? $_GET['dal'] : '';
 $f_al = preg_match('/^\d{4}-\d{2}-\d{2}$/', (string)($_GET['al'] ?? '')) ? $_GET['al'] : '';
 $elenco_pratiche = function () use ($conn, $f_stato, $f_mod, $f_q, $f_sed, $f_dal, $f_al, $f_car, $io_operatore) {
@@ -260,7 +370,9 @@ $elenco_pratiche = function () use ($conn, $f_stato, $f_mod, $f_q, $f_sed, $f_da
     if ($f_stato === 'aperte') $where[] = "p.stato IN ('inviata', 'in_lavorazione', 'integrazione')"; elseif ($f_stato !== 'tutte') { $where[] = "p.stato = ?"; $tipi .= 's'; $par[] = $f_stato; }
     if ($f_mod) $where[] = "p.modulo_id = $f_mod";
     if ($f_sed === 'nessuna') $where[] = "p.seduta_id IS NULL"; elseif ((int)$f_sed > 0) $where[] = "p.seduta_id = " . (int)$f_sed;
-    if ($f_car === 'me') $where[] = "p.assegnata_a = " . (int)($io_operatore['id'] ?? -1); elseif ($f_car === 'smistare') $where[] = "p.assegnata_a IS NULL AND p.stato NOT IN ('accolta', 'respinta', 'chiusa')";
+    if ($f_car === 'me') $where[] = "p.assegnata_a = " . (int)($io_operatore['id'] ?? -1);
+    elseif ($f_car === 'seguite') $where[] = "p.id IN (SELECT pratica_id FROM pratiche_operatori WHERE operatore_id = " . (int)($io_operatore['id'] ?? -1) . ") AND (p.assegnata_a IS NULL OR p.assegnata_a <> " . (int)($io_operatore['id'] ?? -1) . ")";
+    elseif ($f_car === 'smistare') $where[] = "p.assegnata_a IS NULL AND p.stato NOT IN ('accolta', 'respinta', 'chiusa')";
     if ($f_dal !== '') { $where[] = "p.creata_il >= ?"; $tipi .= 's'; $par[] = "$f_dal 00:00:00"; }
     if ($f_al !== '') { $where[] = "p.creata_il <= ?"; $tipi .= 's'; $par[] = "$f_al 23:59:59"; }
     if ($f_q !== '') { $like = '%' . addcslashes($f_q, '%_\\') . '%'; $where[] = "(p.nome LIKE ? OR p.cognome LIKE ? OR p.email LIKE ? OR p.codice LIKE ? OR p.matricola LIKE ?)"; $tipi .= 'sssss'; array_push($par, $like, $like, $like, $like, $like); }
@@ -273,6 +385,7 @@ $elenco_pratiche = function () use ($conn, $f_stato, $f_mod, $f_q, $f_sed, $f_da
 // ── Esportazioni (Excel e Word): scartano la pagina già prodotta dall'intestazione ──
 if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true)) {
     $seduta_exp = $tab === 'sedute' ? seduta_didattica($conn, (int)($_GET['id'] ?? 0)) : null;
+    if ($solo_ref && !$puo_seduta($seduta_exp)) nega_accesso();
     if ($seduta_exp) $ids = array_column($conn->query("SELECT id FROM pratiche WHERE seduta_id = " . (int)$seduta_exp['id'])->fetch_all(MYSQLI_ASSOC), 'id');
     elseif (!empty($_GET['ids'])) $ids = array_map('intval', explode(',', (string)$_GET['ids']));
     else $ids = array_column($elenco_pratiche(), 'id');
@@ -291,7 +404,10 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
 .dd-ev { border-left: 3px solid #e2e8f0; padding: 4px 0 10px 14px; position: relative; }
 .dd-ev::before { content: ''; position: absolute; left: -7px; top: 6px; width: 11px; height: 11px; border-radius: 50%; background: #94a3b8; }
 .dd-ev.uff::before { background: #047857; } .dd-ev.stu::before { background: #0056B3; }
-.dd-campo { display: grid; grid-template-columns: 2fr 1.3fr 2fr auto auto 1.6fr 34px; gap: .4rem; align-items: center; margin-bottom: .4rem; padding: .3rem; border-radius: 6px; }
+.dd-campo { display: grid; grid-template-columns: 2fr 1.4fr 2fr auto auto 1.6fr 34px 34px; gap: .4rem; align-items: center; margin-bottom: .4rem; padding: .3rem; border-radius: 6px; }
+.dd-campo.dd-testa { margin-bottom: 0; padding-bottom: 0; }
+.dd-logica { grid-column: 1 / -1; background: #fff7ed; border: 1px dashed #fdba74; border-radius: 6px; padding: .5rem; }
+.dd-col-riga { display: grid; grid-template-columns: 2fr 1.6fr 2fr 30px; gap: .3rem; margin-bottom: .25rem; }
 .dd-campo.uff { background: #ecfdf5; }
 @media (max-width: 991.98px) { .dd-campo { grid-template-columns: 1fr 1fr; } }
 .dd-preset { border: 1px dashed #94a3b8; border-radius: 10px; padding: .6rem .8rem; background: #f8fafc; }
@@ -307,6 +423,7 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
                     'moduli' => ['fa-file-lines', 'Moduli e documenti (' . count($moduli) . ')'],
                     'ufficio' => ['fa-people-group', 'Ufficio e ricevimento'],
                     'statistiche' => ['fa-chart-column', 'Statistiche']] as $k => [$ico, $txt]): ?>
+        <?php if ($solo_ref && $k !== 'sedute') continue; ?>
         <li class="nav-item"><a class="nav-link fw-bold<?php echo $tab === $k ? ' active' : ' bg-light text-dark'; ?>" href="<?php echo $base; ?>&amp;tab=<?php echo $k; ?>"><i class="fa <?php echo $ico; ?> me-1" aria-hidden="true"></i><?php echo $txt; ?></a></li>
     <?php endforeach; ?>
 </ul>
@@ -327,14 +444,15 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
         $o_carico = $p['assegnata_a'] ? operatore_ufficio($conn, (int)$p['assegnata_a']) : null;
         $conclusa = in_array($p['stato'], ['accolta', 'respinta', 'chiusa'], true);
         $richiesta = json_decode((string)($p['richiesta_json'] ?? ''), true) ?: null;
-        $tipi_ev = ['passaggio' => ['fa-route', 'Passaggio'], 'attivita' => ['fa-paperclip', 'Attività'], 'autodich' => ['fa-file-signature', 'Autodichiarazione'], 'messaggio' => ['fa-comment', ''], 'stato' => ['fa-flag', '']];
+        $tipi_ev = ['richiesta' => ['fa-people-arrows', 'Richiesta a un operatore'], 'passaggio' => ['fa-route', 'Passaggio'], 'attivita' => ['fa-paperclip', 'Attività'], 'autodich' => ['fa-file-signature', 'Autodichiarazione'], 'messaggio' => ['fa-comment', ''], 'stato' => ['fa-flag', '']];
 ?>
     <nav class="small mb-2"><a href="<?php echo $base; ?>&amp;tab=pratiche" class="text-decoration-none"><i class="fa fa-arrow-left me-1" aria-hidden="true"></i>Tutte le pratiche</a></nav>
 
     <div class="card border-0 shadow-sm mb-3" style="border-left:4px solid #0056B3 !important;"><div class="card-body">
         <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
             <h6 class="fw-bold mb-0"><i class="fa fa-route me-1 text-primary" aria-hidden="true"></i>Iter della pratica</h6>
-            <span class="small text-secondary"><?php echo $o_carico ? 'In carico a <strong>' . $h(etichetta_operatore($o_carico)) . '</strong>' . ($io_operatore && (int)$io_operatore['id'] === (int)$o_carico['id'] ? ' <span class="badge bg-success">a te</span>' : '') : ($conclusa ? 'Conclusa' : '<span class="badge bg-warning text-dark">da smistare</span>'); ?></span>
+            <span class="small text-secondary"><?php echo $o_carico ? 'In carico a <strong>' . $h(etichetta_operatore($o_carico)) . '</strong>' . ($io_operatore && (int)$io_operatore['id'] === (int)$o_carico['id'] ? ' <span class="badge bg-success">a te</span>' : '') : ($conclusa ? 'Conclusa' : '<span class="badge bg-warning text-dark">da smistare</span>'); ?>
+                <?php if ($io_operatore && (int)$io_operatore['id'] !== (int)$p['assegnata_a'] && in_array((int)$io_operatore['id'], operatori_pratica($conn, (int)$p['id']), true)): ?> · <span class="badge bg-light text-dark border" title="Puoi aggiungere documenti e note: chi l'ha in carico viene avvisato"><i class="fa fa-clock-rotate-left me-1" aria-hidden="true"></i>l'hai avuta in carico</span><?php endif; ?></span>
         </div>
         <?php echo html_iter_pratica($conn, $p, $m_p); ?>
         <?php if (!$conclusa): $sugg = operatori_suggeriti($conn, $p, $m_p, $passo_dopo); ?>
@@ -364,7 +482,7 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
                 </div>
                 <p class="mb-3"><strong><?php echo $h(trim($p['cognome'] . ' ' . $p['nome'])); ?></strong> · <a href="mailto:<?php echo $h($p['email']); ?>"><?php echo $h($p['email']); ?></a><?php echo $p['matricola'] !== '' ? ' · matricola ' . $h($p['matricola']) : ''; ?></p>
                 <dl class="row small mb-0">
-                    <?php foreach ($risposte as $i => $r): ?>
+                    <?php foreach ($risposte as $i => $r): if (!empty($r['nascosto'])) continue; ?>
                         <dt class="col-sm-4"><?php echo $h($r['etichetta']); ?></dt>
                         <dd class="col-sm-8"><?php if (!empty($r['file'])): ?><a href="../allegato_pratica.php?p=<?php echo (int)$p['id']; ?>&amp;r=<?php echo $i; ?>"><i class="fa fa-paperclip me-1" aria-hidden="true"></i><?php echo $h($r['nome_file']); ?></a><?php else: echo html_risposta_pratica($r); endif; ?></dd>
                     <?php endforeach; ?>
@@ -436,6 +554,18 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
                 <p class="small text-secondary mt-2 mb-0">Lo studente riceve un'email e risponde dalla pratica allegando i file o rendendo l'autodichiarazione (D.P.R. 445/2000); poi la pratica torna «In lavorazione».</p>
             </div></form>
 
+            <?php $prec = array_values(array_filter(array_map(fn($oid) => operatore_ufficio($conn, $oid), operatori_pratica($conn, (int)$p['id'])), fn($o) => $o && (int)$o['id'] !== (int)$p['assegnata_a']));
+            if ($prec): ?>
+            <form method="POST" class="card border-0 shadow-sm mb-3" style="border-left:4px solid #7c3aed !important;"><div class="card-body">
+                <?php csrf_field(); ?><input type="hidden" name="pratica_id" value="<?php echo (int)$p['id']; ?>">
+                <h6 class="fw-bold"><i class="fa fa-people-arrows me-1" style="color:#7c3aed;" aria-hidden="true"></i>Chiedi un'integrazione a chi l'ha avuta prima</h6>
+                <p class="small text-secondary mb-2">Chi ha avuto la pratica nei passi precedenti continua a vederla: riceve un'email e aggiunge documenti o note; chi l'ha in carico viene avvisato.</p>
+                <select class="form-select form-select-sm mb-2" name="operatore_prec" aria-label="Operatore"><?php foreach ($prec as $o): ?><option value="<?php echo (int)$o['id']; ?>"><?php echo $h(etichetta_operatore($o)); ?></option><?php endforeach; ?></select>
+                <textarea class="form-control form-control-sm mb-2" name="testo_operatore" rows="2" maxlength="3000" placeholder="Cosa serve (es. il verbale del CdL firmato)" aria-label="Cosa serve"></textarea>
+                <button type="submit" name="richiedi_operatore" value="1" class="btn btn-sm fw-bold text-white" style="background:#7c3aed;">Invia la richiesta</button>
+            </div></form>
+            <?php endif; ?>
+
             <div class="card border-0 shadow-sm"><div class="card-body">
                 <h6 class="fw-bold">Cambia stato</h6>
                 <form method="POST">
@@ -447,7 +577,7 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
                             <button type="submit" name="stato_pratica" value="<?php echo $k; ?>" class="btn btn-sm fw-bold text-white text-start" style="background:<?php echo $col; ?>;"><i class="fa <?php echo $ico; ?> me-1" aria-hidden="true"></i><?php echo $n; ?></button>
                         <?php endforeach; ?>
                     </div>
-                    <p class="small text-secondary mt-2 mb-0">Lo studente riceve un'email con il nuovo stato e la nota.</p>
+                    <p class="small text-secondary mt-2 mb-0">Lo studente riceve un'email per gli esiti (accolta, respinta, chiusa) e per le richieste di integrazione; i passaggi tra uffici gli arrivano quando la pratica passa di mano.</p>
                 </form>
             </div></div>
         </div>
@@ -457,7 +587,7 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
         $qs_filtri = http_build_query(['stato' => $f_stato, 'modulo' => $f_mod ?: null, 'q' => $f_q ?: null, 'seduta' => $f_sed ?: null, 'dal' => $f_dal ?: null, 'al' => $f_al ?: null, 'carico' => $f_car ?: null]);
     ?>
     <div class="d-flex flex-wrap gap-1 mb-2">
-        <?php foreach (['' => ['fa-inbox', 'Tutte'], 'smistare' => ['fa-shuffle', 'Da smistare'], 'me' => ['fa-user-check', 'Assegnate a me']] as $k_c => [$ico_c, $txt_c]): if ($k_c === 'me' && !$io_operatore) continue; ?>
+        <?php foreach (['' => ['fa-inbox', 'Tutte'], 'smistare' => ['fa-shuffle', 'Da smistare'], 'me' => ['fa-user-check', 'Assegnate a me'], 'seguite' => ['fa-clock-rotate-left', 'Passate ad altri uffici']] as $k_c => [$ico_c, $txt_c]): if (in_array($k_c, ['me', 'seguite'], true) && !$io_operatore) continue; ?>
             <a class="btn btn-sm <?php echo $f_car === $k_c ? 'btn-dark' : 'btn-outline-dark'; ?>" href="<?php echo $base; ?>&amp;tab=pratiche&amp;carico=<?php echo $k_c; ?>"><i class="fa <?php echo $ico_c; ?> me-1" aria-hidden="true"></i><?php echo $txt_c; ?></a>
         <?php endforeach; ?>
     </div>
@@ -524,19 +654,136 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
 
 <?php elseif ($tab === 'sedute'):
     $sel = !empty($_GET['id']) ? seduta_didattica($conn, (int)$_GET['id']) : null;
+    if ($sel && !$puo_seduta($sel)) $sel = null;
     $mod_s = !empty($_GET['modifica']) ? seduta_didattica($conn, (int)$_GET['modifica']) : null;
-    if ($mod_s || !empty($_GET['nuova'])):
-        // Nuova seduta: organo, luogo, o.d.g., presenze, segretario e coordinatore ripresi dall'ultima seduta
-        $ult = $sedute[0] ?? null;
-        $f = $mod_s ?: ['id' => 0, 'organo' => $ult['organo'] ?? '', 'anno_accademico' => anno_accademico_corrente() . '/' . (anno_accademico_corrente() + 1), 'data' => '', 'ora_inizio' => '', 'ora_fine' => '',
-                        'luogo' => $ult['luogo'] ?? '', 'odg' => $ult['odg'] ?? "Comunicazioni\nPratiche studenti\nVarie ed eventuali", 'presenze' => $ult['presenze'] ?? '', 'segretario' => $ult['segretario'] ?? '', 'coordinatore' => $ult['coordinatore'] ?? ''];
+    if ($mod_s && !$puo_seduta($mod_s) && !$puo_didattica_tutto) $mod_s = null;
+    $cons_sel = isset($_GET['consiglio']) ? ((int)$_GET['consiglio'] ? consiglio_didattica($conn, (int)$_GET['consiglio']) : ['id' => 0, 'nome' => '', 'corsi' => '[]', 'coordinatore' => '', 'segretario' => '', 'luogo' => '', 'odg' => '', 'attivo' => 1, 'ordine' => count($consigli) + 1]) : null;
+    if ($cons_sel && ((int)$cons_sel['id'] ? !$puo_consiglio((int)$cons_sel['id']) : $solo_ref)) $cons_sel = null;
+    $consigli_vis = array_filter($consigli, fn($c) => $puo_consiglio((int)$c['id']));
+    if ($cons_sel):
+        // ── Consiglio: dati (Ufficio didattico), referenti (Ufficio didattico), componenti (anche i referenti) ──
+        $cid = (int)$cons_sel['id'];
+        $referenti = $cid ? persone_consiglio($conn, $cid, 'referente') : [];
+        $componenti = $cid ? persone_consiglio($conn, $cid) : [];
+        $corsi_c = json_decode((string)$cons_sel['corsi'], true) ?: [];
+        $qualifiche = array_values(array_unique(array_merge(QUALIFICHE_CONSIGLIO, array_filter(array_column($componenti, 'qualifica')))));
+?>
+    <nav class="small mb-2"><a href="<?php echo $base; ?>&amp;tab=sedute" class="text-decoration-none"><i class="fa fa-arrow-left me-1" aria-hidden="true"></i>Sedute e consigli</a></nav>
+    <?php if (!$solo_ref): ?>
+    <form method="POST" class="card border-0 shadow-sm mb-3"><div class="card-body">
+        <?php csrf_field(); ?><input type="hidden" name="consiglio_id" value="<?php echo $cid; ?>">
+        <h5 class="fw-bold mb-2"><i class="fa fa-landmark me-1 text-primary" aria-hidden="true"></i><?php echo $cid ? 'Consiglio' : 'Nuovo consiglio'; ?></h5>
+        <div class="row g-2">
+            <div class="col-md-10"><label class="form-label small fw-bold" for="cNome">Nome del consiglio (organo nel verbale) <span class="text-danger">*</span></label><input class="form-control" id="cNome" name="c_nome" value="<?php echo $h($cons_sel['nome']); ?>" required maxlength="500"></div>
+            <div class="col-md-1"><label class="form-label small fw-bold" for="cOrd">Ordine</label><input type="number" class="form-control" id="cOrd" name="c_ordine" value="<?php echo (int)$cons_sel['ordine']; ?>"></div>
+            <div class="col-md-1 d-flex align-items-end"><label class="form-check"><input class="form-check-input" type="checkbox" name="c_attivo" value="1"<?php echo (int)$cons_sel['attivo'] ? ' checked' : ''; ?>> attivo</label></div>
+            <div class="col-md-4"><label class="form-label small fw-bold" for="cCoo">Coordinatore</label><input class="form-control form-control-sm" id="cCoo" name="c_coordinatore" value="<?php echo $h($cons_sel['coordinatore']); ?>" placeholder="Prof. …" maxlength="200"></div>
+            <div class="col-md-4"><label class="form-label small fw-bold" for="cSeg">Segretario verbalizzante</label><input class="form-control form-control-sm" id="cSeg" name="c_segretario" value="<?php echo $h($cons_sel['segretario']); ?>" placeholder="la Dott.ssa …" maxlength="200"></div>
+            <div class="col-md-4"><label class="form-label small fw-bold" for="cLuo">Luogo abituale</label><input class="form-control form-control-sm" id="cLuo" name="c_luogo" value="<?php echo $h($cons_sel['luogo']); ?>" maxlength="255"></div>
+            <div class="col-md-6"><label class="form-label small fw-bold" for="cCorsi">Corsi di studio del consiglio</label>
+                <select class="form-select form-select-sm" id="cCorsi" name="c_corsi[]" multiple size="5"><?php foreach (scelte_anagrafe_didattica($conn, 'corso_studio') as $g => $cc): ?><optgroup label="<?php echo $h($g); ?>"><?php foreach ($cc as $c): ?><option<?php echo in_array($c, $corsi_c, true) ? ' selected' : ''; ?>><?php echo $h($c); ?></option><?php endforeach; ?></optgroup><?php endforeach; ?></select>
+                <div class="form-text">Con Ctrl se ne scelgono più d'uno: le pratiche di questi corsi vengono proposte per le sedute del consiglio.</div></div>
+            <div class="col-md-6"><label class="form-label small fw-bold" for="cOdg">Ordine del giorno proposto</label><textarea class="form-control form-control-sm" id="cOdg" name="c_odg" rows="5" placeholder="Comunicazioni&#10;Pratiche studenti&#10;Varie ed eventuali"><?php echo $h($cons_sel['odg']); ?></textarea></div>
+        </div>
+        <button type="submit" name="salva_consiglio" value="1" class="btn btn-sm btn-primary fw-bold mt-2"><i class="fa fa-save me-1" aria-hidden="true"></i>Salva il consiglio</button>
+    </div></form>
+    <?php else: ?>
+        <h5 class="fw-bold mb-1"><?php echo $h($cons_sel['nome']); ?></h5>
+    <?php endif; ?>
+    <?php if ($cid): ?>
+    <div class="row g-3">
+        <div class="col-lg-4">
+            <div class="card border-0 shadow-sm"><div class="card-body">
+                <h6 class="fw-bold"><i class="fa fa-user-shield me-1 text-success" aria-hidden="true"></i>Referenti del consiglio</h6>
+                <p class="small text-secondary">Entrano nel pannello Didattica con le credenziali Unical e gestiscono solo le sedute di questo consiglio: componenti, presenze, pratiche e decisioni, verbale.</p>
+                <?php foreach ($referenti as $x): ?>
+                    <form method="POST" class="d-flex align-items-center gap-2 small border-bottom py-1"><?php csrf_field(); ?>
+                        <span class="flex-grow-1"><strong><?php echo $h($x['nominativo']); ?></strong><span class="d-block text-secondary"><?php echo $h($x['email']); ?></span></span>
+                        <?php if (!$solo_ref): ?><button type="submit" name="togli_persona_consiglio" value="<?php echo (int)$x['id']; ?>" class="btn btn-sm btn-outline-danger py-0" data-confirm="Togliere <?php echo $h($x['nominativo']); ?> dai referenti?" aria-label="Togli"><i class="fa fa-user-minus" aria-hidden="true"></i></button><?php endif; ?>
+                    </form>
+                <?php endforeach; ?>
+                <?php if (!$referenti): ?><p class="small text-muted">Nessun referente.</p><?php endif; ?>
+                <?php if (!$solo_ref): ?>
+                <form method="POST" class="mt-2 dd-scelta-persona"><?php csrf_field(); ?><input type="hidden" name="consiglio_id" value="<?php echo $cid; ?>"><input type="hidden" name="ruolo_persona" value="referente"><input type="hidden" name="persona_id" value="">
+                    <input type="hidden" name="aggiungi_persona_consiglio" value="1">
+                    <?php echo html_ricerca_personale($conn, 'Referente'); ?>
+                </form>
+                <?php endif; ?>
+            </div></div>
+        </div>
+        <div class="col-lg-8">
+            <div class="card border-0 shadow-sm"><div class="card-body">
+                <h6 class="fw-bold"><i class="fa fa-users me-1 text-primary" aria-hidden="true"></i>Componenti (<?php echo count($componenti); ?>)</h6>
+                <p class="small text-secondary">Si inseriscono una volta sola: in ogni seduta si segna solo chi è presente, assente giustificato o ingiustificato. Il gruppo (es. Professori ordinari) è il titolo sotto cui il componente compare nel verbale.</p>
+                <?php if ($componenti): ?>
+                <form method="POST"><?php csrf_field(); ?><input type="hidden" name="consiglio_id" value="<?php echo $cid; ?>">
+                    <datalist id="dlQual"><?php foreach ($qualifiche as $q): ?><option value="<?php echo $h($q); ?>"><?php endforeach; ?></datalist>
+                    <div class="table-responsive" style="max-height:480px;overflow:auto;"><table class="table table-sm align-middle small mb-2">
+                        <thead class="table-light"><tr><th>Componente</th><th style="width:38%;">Gruppo nel verbale</th><th style="width:70px;">Ordine</th><th style="width:40px;"></th></tr></thead><tbody>
+                        <?php foreach ($componenti as $x): ?>
+                            <tr><td><strong><?php echo $h($x['nominativo']); ?></strong><?php echo $x['persona_id'] ? ' <i class="fa fa-address-book text-secondary" title="dall\'anagrafe" aria-hidden="true"></i>' : ''; ?><div class="text-secondary"><?php echo $h($x['email']); ?></div></td>
+                                <td><input class="form-control form-control-sm" name="qualifica_p[<?php echo (int)$x['id']; ?>]" value="<?php echo $h($x['qualifica']); ?>" list="dlQual" aria-label="Gruppo di <?php echo $h($x['nominativo']); ?>"></td>
+                                <td><input type="number" class="form-control form-control-sm" name="ordine_p[<?php echo (int)$x['id']; ?>]" value="<?php echo (int)$x['ordine']; ?>" aria-label="Ordine"></td>
+                                <td><button type="submit" name="togli_persona_consiglio" value="<?php echo (int)$x['id']; ?>" class="btn btn-sm btn-link text-danger p-0" data-confirm="Togliere <?php echo $h($x['nominativo']); ?> dai componenti?" aria-label="Togli"><i class="fa fa-times" aria-hidden="true"></i></button></td></tr>
+                        <?php endforeach; ?>
+                        </tbody></table></div>
+                    <button type="submit" name="salva_qualifiche" value="1" class="btn btn-sm btn-outline-primary">Salva gruppi e ordine</button>
+                </form>
+                <?php endif; ?>
+                <div class="row g-2 mt-2">
+                    <div class="col-md-7">
+                        <form method="POST" class="dd-scelta-persona"><?php csrf_field(); ?><input type="hidden" name="consiglio_id" value="<?php echo $cid; ?>"><input type="hidden" name="ruolo_persona" value="componente"><input type="hidden" name="persona_id" value="">
+                            <input type="hidden" name="aggiungi_persona_consiglio" value="1">
+                            <label class="form-label small fw-bold mb-0" for="qualAn">Gruppo (vuoto = dal ruolo dell'anagrafe)</label>
+                            <input class="form-control form-control-sm mb-1" id="qualAn" name="qualifica" list="dlQual2" placeholder="es. Professori associati">
+                            <datalist id="dlQual2"><?php foreach ($qualifiche as $q): ?><option value="<?php echo $h($q); ?>"><?php endforeach; ?></datalist>
+                            <?php echo html_ricerca_personale($conn, 'Aggiungi'); ?>
+                        </form>
+                    </div>
+                    <div class="col-md-5">
+                        <form method="POST" class="bg-light rounded p-2"><?php csrf_field(); ?><input type="hidden" name="consiglio_id" value="<?php echo $cid; ?>"><input type="hidden" name="ruolo_persona" value="componente">
+                            <div class="small fw-bold mb-1">Non è nell'anagrafe (es. rappresentanti degli studenti)</div>
+                            <input class="form-control form-control-sm mb-1" name="nominativo" placeholder="Cognome e nome" maxlength="200" aria-label="Cognome e nome">
+                            <input class="form-control form-control-sm mb-1" name="email_persona" type="email" placeholder="Email (facoltativa)" aria-label="Email">
+                            <input class="form-control form-control-sm mb-2" name="qualifica" list="dlQual2" value="Rappresentanti degli studenti" aria-label="Gruppo nel verbale">
+                            <button type="submit" name="aggiungi_persona_consiglio" value="1" class="btn btn-sm btn-success fw-bold"><i class="fa fa-plus me-1" aria-hidden="true"></i>Aggiungi</button>
+                        </form>
+                    </div>
+                </div>
+            </div></div>
+        </div>
+    </div>
+    <script>
+    // Persona scelta dall'anagrafe: si salva subito (referente o componente del consiglio)
+    document.querySelectorAll('.dd-scelta-persona').forEach(function (f) {
+        f.addEventListener('persona-scelta', function (e) { f.querySelector('[name=persona_id]').value = e.detail.id; f.submit(); });
+        f.addEventListener('submit', function (e) { if (!f.querySelector('[name=persona_id]').value) e.preventDefault(); });
+    });
+    </script>
+    <?php endif; ?>
+
+<?php elseif ($mod_s || !empty($_GET['nuova'])):
+        // Nuova seduta: dati ripresi dal consiglio scelto e dall'ultima seduta dello stesso consiglio
+        $cons_new = (int)($_GET['consiglio_id'] ?? 0);
+        if ($solo_ref && !in_array($cons_new, $consigli_referente, true)) $cons_new = (int)($consigli_referente[0] ?? 0);
+        $ult = null;
+        foreach ($sedute as $x) if (!$cons_new || (int)$x['consiglio_id'] === $cons_new) { $ult = $x; break; }
+        $cc = $cons_new ? ($consigli[$cons_new] ?? null) : null;
+        $f = $mod_s ?: ['id' => 0, 'consiglio_id' => $cons_new, 'organo' => $cc['nome'] ?? ($ult['organo'] ?? ''), 'anno_accademico' => anno_accademico_corrente() . '/' . (anno_accademico_corrente() + 1), 'data' => '', 'ora_inizio' => '', 'ora_fine' => '',
+                        'luogo' => ($cc['luogo'] ?? '') ?: ($ult['luogo'] ?? ''), 'odg' => ($cc['odg'] ?? '') ?: ($ult['odg'] ?? "Comunicazioni\nPratiche studenti\nVarie ed eventuali"), 'presenze' => $cc ? '' : ($ult['presenze'] ?? ''),
+                        'segretario' => ($cc['segretario'] ?? '') ?: ($ult['segretario'] ?? ''), 'coordinatore' => ($cc['coordinatore'] ?? '') ?: ($ult['coordinatore'] ?? '')];
         $organi = array_values(array_unique(array_filter(array_column($sedute, 'organo'))));
 ?>
     <form method="POST" class="card border-0 shadow-sm"><div class="card-body">
         <?php csrf_field(); ?><input type="hidden" name="seduta_id" value="<?php echo (int)$f['id']; ?>">
         <h5 class="fw-bold mb-1"><?php echo $f['id'] ? 'Modifica seduta' : 'Nuova seduta del Consiglio'; ?></h5>
-        <?php if (!$f['id'] && $ult): ?><p class="small text-secondary">Ho ripreso organo, luogo, ordine del giorno e presenze dall'ultima seduta: aggiorna quello che cambia.</p><?php endif; ?>
+        <?php if (!$f['id'] && ($cc || $ult)): ?><p class="small text-secondary">Ho ripreso organo, luogo, ordine del giorno, coordinatore e segretario <?php echo $cc ? 'dal consiglio' : "dall'ultima seduta"; ?>: aggiorna quello che cambia.</p><?php endif; ?>
         <div class="row g-2">
+            <div class="col-md-12"><label class="form-label small fw-bold" for="sCons">Consiglio</label>
+                <select class="form-select" id="sCons" name="consiglio_id" onchange="if(!<?php echo (int)$f['id']; ?>) location.href='<?php echo $base; ?>&tab=sedute&nuova=1&consiglio_id='+this.value;">
+                    <?php if (!$solo_ref): ?><option value="0">— nessuno (presenze scritte a mano) —</option><?php endif; ?>
+                    <?php foreach ($consigli_vis as $k => $c): if (!(int)$c['attivo'] && (int)$f['consiglio_id'] !== $k) continue; ?><option value="<?php echo $k; ?>"<?php echo (int)$f['consiglio_id'] === $k ? ' selected' : ''; ?>><?php echo $h(mb_strimwidth($c['nome'], 0, 150, '…')); ?></option><?php endforeach; ?></select>
+                <div class="form-text">Con il consiglio le presenze si segnano per componente (presente / assente giustificato / ingiustificato) e finiscono nel verbale.</div></div>
             <div class="col-md-9"><label class="form-label small fw-bold" for="sOrg">Organo <span class="text-danger">*</span></label><input type="text" class="form-control" id="sOrg" name="organo" value="<?php echo $h($f['organo']); ?>" list="sOrgList" required maxlength="500" placeholder="Consiglio del Corso di Laurea in …">
                 <datalist id="sOrgList"><?php foreach ($organi as $o): ?><option value="<?php echo $h($o); ?>"><?php endforeach; ?></datalist></div>
             <div class="col-md-3"><label class="form-label small fw-bold" for="sAa">Anno accademico</label><select class="form-select" id="sAa" name="anno_accademico"><?php foreach (anni_accademici_scelta() as $a): ?><option<?php echo $a === $f['anno_accademico'] ? ' selected' : ''; ?>><?php echo $a; ?></option><?php endforeach; ?></select></div>
@@ -546,7 +793,7 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
             <div class="col-md-5"><label class="form-label small fw-bold" for="sLuogo">Luogo</label><input type="text" class="form-control" id="sLuogo" name="luogo" value="<?php echo $h($f['luogo']); ?>" placeholder="l'aula L3 del cubo 4A" maxlength="255"></div>
             <div class="col-md-6"><label class="form-label small fw-bold" for="sOdg">Ordine del giorno</label><textarea class="form-control" id="sOdg" name="odg" rows="10"><?php echo $h($f['odg']); ?></textarea>
                 <div class="form-text">Un punto per riga. Le pratiche vanno nel punto che contiene la parola «pratiche».</div></div>
-            <div class="col-md-6"><label class="form-label small fw-bold" for="sPres">Presenze</label><textarea class="form-control font-monospace" id="sPres" name="presenze" rows="10" style="font-size:.8rem;" placeholder="Professori Ordinari e Associati&#10;Prof. Rossi Mario (Coordinatore) | PRESENTE&#10;Prof.ssa Bianchi Anna | GIUSTIFICATA"><?php echo $h($f['presenze']); ?></textarea>
+            <div class="col-md-6"<?php echo (int)$f['consiglio_id'] ? ' hidden' : ''; ?>><label class="form-label small fw-bold" for="sPres">Presenze (senza consiglio)</label><textarea class="form-control font-monospace" id="sPres" name="presenze" rows="10" style="font-size:.8rem;" placeholder="Professori Ordinari e Associati&#10;Prof. Rossi Mario (Coordinatore) | PRESENTE&#10;Prof.ssa Bianchi Anna | GIUSTIFICATA"><?php echo $h($f['presenze']); ?></textarea>
                 <div class="form-text">Una riga per persona: <code>Nome | PRESENTE</code> (o ASSENTE, GIUSTIFICATO). Le righe senza «|» diventano titoli di gruppo.</div></div>
             <div class="col-md-6"><label class="form-label small fw-bold" for="sSeg">Segretario verbalizzante</label><input type="text" class="form-control" id="sSeg" name="segretario" value="<?php echo $h($f['segretario']); ?>" placeholder="la Dott.ssa …" maxlength="200"></div>
             <div class="col-md-6"><label class="form-label small fw-bold" for="sCoo">Coordinatore</label><input type="text" class="form-control" id="sCoo" name="coordinatore" value="<?php echo $h($f['coordinatore']); ?>" placeholder="Prof. …" maxlength="200"></div>
@@ -558,15 +805,28 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
     </div></form>
     <?php elseif ($sel):
         $pr_sel = pratiche_per_esportazione($conn, array_column($conn->query("SELECT id FROM pratiche WHERE seduta_id = " . (int)$sel['id'])->fetch_all(MYSQLI_ASSOC), 'id'));
-        $libere = $conn->query("SELECT p.id, p.codice, p.cognome, p.nome, p.matricola, p.stato, m.titolo AS modulo_titolo FROM pratiche p JOIN didattica_moduli m ON m.id = p.modulo_id
+        $cons_s = $sel['consiglio_id'] ? ($consigli[(int)$sel['consiglio_id']] ?? null) : null;
+        $corsi_cons = $cons_s ? (json_decode((string)$cons_s['corsi'], true) ?: []) : [];
+        $libere = $conn->query("SELECT p.id, p.codice, p.cognome, p.nome, p.matricola, p.stato, p.risposte_json, m.titolo AS modulo_titolo FROM pratiche p JOIN didattica_moduli m ON m.id = p.modulo_id
                                 WHERE p.seduta_id IS NULL AND p.stato NOT IN ('chiusa', 'respinta') ORDER BY m.titolo, p.cognome, p.nome")->fetch_all(MYSQLI_ASSOC);
+        // Pratiche dei corsi del consiglio per prime (per i referenti solo quelle, se il consiglio ha i corsi)
+        $corso_di = function ($x) { foreach (json_decode((string)$x['risposte_json'], true) ?: [] as $r) if (($r['tipo'] ?? '') === 'corso_studio' && $r['valore'] !== '') return $r['valore']; return ''; };
+        if ($corsi_cons) {
+            usort($libere, fn($a, $b) => (int)!in_array($corso_di($a), $corsi_cons, true) <=> (int)!in_array($corso_di($b), $corsi_cons, true));
+            if ($solo_ref) $libere = array_values(array_filter($libere, fn($x) => in_array($corso_di($x), $corsi_cons, true)));
+        }
         $url_sel = "$base&tab=sedute&id=" . (int)$sel['id'];
+        $presenze = presenze_seduta($conn, $sel);
+        $np = riepilogo_presenze(array_filter($presenze, fn($r) => !empty($r['_salvata'])));
+        $con_esito = count(array_filter($pr_sel, fn($x) => ($x['esito_seduta'] ?? '') !== ''));
+        $ins_dip = insegnamenti_dipartimento_scelta($conn);
     ?>
     <nav class="small mb-2"><a href="<?php echo $base; ?>&amp;tab=sedute" class="text-decoration-none"><i class="fa fa-arrow-left me-1" aria-hidden="true"></i>Tutte le sedute</a></nav>
     <div class="card border-0 shadow-sm mb-3"><div class="card-body d-flex flex-wrap gap-3 align-items-start">
         <div class="flex-grow-1" style="min-width:260px;">
             <h5 class="fw-bold mb-1"><?php echo $h($sel['organo']); ?></h5>
             <div class="small text-secondary"><?php echo $sel['data'] ? date('d/m/Y', strtotime($sel['data'])) : 'data da definire'; ?><?php echo $sel['ora_inizio'] ? ' · ore ' . $h($sel['ora_inizio']) : ''; ?><?php echo $sel['luogo'] ? ' · ' . $h($sel['luogo']) : ''; ?><?php echo $sel['anno_accademico'] ? ' · a.a. ' . $h($sel['anno_accademico']) : ''; ?></div>
+            <?php if ($cons_s): ?><div class="small"><a href="<?php echo $base; ?>&amp;tab=sedute&amp;consiglio=<?php echo (int)$cons_s['id']; ?>"><i class="fa fa-users me-1" aria-hidden="true"></i>Componenti e referenti del consiglio</a></div><?php endif; ?>
         </div>
         <div class="d-flex flex-wrap gap-2">
             <a class="btn btn-primary fw-bold" href="<?php echo $h($url_sel); ?>&amp;esporta=docx"><i class="fa fa-file-word me-1" aria-hidden="true"></i>Verbale in Word</a>
@@ -575,47 +835,178 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
             <form method="POST" class="m-0"><?php csrf_field(); ?><button type="submit" name="elimina_seduta" value="<?php echo (int)$sel['id']; ?>" class="btn btn-outline-danger" data-confirm="Eliminare la seduta? Le pratiche restano, senza seduta." aria-label="Elimina la seduta"><i class="fa fa-trash" aria-hidden="true"></i></button></form>
         </div>
     </div></div>
-    <div class="row g-3">
-        <div class="col-lg-7">
-            <form method="POST" class="card border-0 shadow-sm"><div class="card-body">
-                <?php csrf_field(); ?><input type="hidden" name="torna" value="<?php echo $h($url_sel); ?>"><input type="hidden" name="seduta_id" value="0">
-                <h6 class="fw-bold">Pratiche portate in seduta (<?php echo count($pr_sel); ?>)</h6>
-                <?php if (!$pr_sel): ?><p class="small text-muted mb-0">Nessuna: aggiungile dall'elenco a destra o dalla scheda Pratiche.</p><?php endif; ?>
-                <?php $mod_corr = null; foreach ($pr_sel as $x): if ($mod_corr !== $x['modulo_titolo']): $mod_corr = $x['modulo_titolo']; ?><div class="small fw-bold text-secondary text-uppercase mt-2" style="font-size:.7rem;"><?php echo $h($mod_corr); ?></div><?php endif; ?>
-                    <label class="d-flex gap-2 align-items-center small py-1 border-bottom"><input type="checkbox" class="form-check-input" name="ids[]" value="<?php echo (int)$x['id']; ?>">
-                        <a href="<?php echo $base; ?>&amp;tab=pratiche&amp;id=<?php echo (int)$x['id']; ?>" class="text-decoration-none"><?php echo $h(trim($x['cognome'] . ' ' . $x['nome'])); ?></a>
-                        <span class="text-secondary"><?php echo $h($x['matricola']); ?></span><span class="ms-auto"><?php echo badge_stato_pratica($x['stato']); ?></span>
-                        <?php if (trim((string)$x['delibera']) === ''): ?><span class="badge bg-light text-secondary border" title="Si userà la delibera predefinita del modulo">delibera predefinita</span><?php endif; ?></label>
-                <?php endforeach; ?>
-                <?php if ($pr_sel): ?><button type="submit" name="assegna_seduta" value="1" class="btn btn-sm btn-outline-danger mt-2">Togli le selezionate dalla seduta</button><?php endif; ?>
-            </div></form>
+
+    <?php if ($presenze): ?>
+    <form method="POST" class="card border-0 shadow-sm mb-3" id="presenze"><div class="card-body">
+        <?php csrf_field(); ?><input type="hidden" name="seduta_id" value="<?php echo (int)$sel['id']; ?>">
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <h6 class="fw-bold mb-0"><i class="fa fa-clipboard-user me-1 text-primary" aria-hidden="true"></i>Presenze</h6>
+            <span class="small text-secondary"><?php echo array_filter($presenze, fn($r) => !empty($r['_salvata'])) ? "Presenti {$np['P']} · assenti giustificati {$np['AG']} · ingiustificati {$np['AI']}" : 'Non ancora registrate: tutti proposti presenti.'; ?></span>
+            <span class="ms-auto d-flex gap-1">
+                <?php foreach (STATI_PRESENZA as $k => $n): ?><button type="button" class="btn btn-sm btn-outline-secondary py-0 dd-tutti" data-stato="<?php echo $k; ?>">Tutti: <?php echo $h(mb_strtolower($n)); ?></button><?php endforeach; ?>
+            </span>
         </div>
-        <div class="col-lg-5">
+        <div class="table-responsive" style="max-height:520px;overflow:auto;"><table class="table table-sm align-middle small mb-2">
+            <thead class="table-light" style="position:sticky;top:0;"><tr><th>Componente</th><?php foreach (STATI_PRESENZA as $k => $n): ?><th class="text-center" style="width:120px;"><?php echo $h($n); ?></th><?php endforeach; ?></tr></thead><tbody>
+            <?php $g_corr = null; foreach ($presenze as $cid_p => $r): if ($r['qualifica'] !== $g_corr): $g_corr = $r['qualifica']; ?><tr class="table-light"><th colspan="4" class="text-uppercase text-secondary" style="font-size:.7rem;"><?php echo $h($g_corr ?: 'Senza gruppo'); ?></th></tr><?php endif; ?>
+                <tr><td><?php echo $h($r['nominativo']); ?></td>
+                    <?php foreach (STATI_PRESENZA as $k => $n): ?><td class="text-center"><input class="form-check-input dd-pres" type="radio" name="presenza[<?php echo (int)$cid_p; ?>]" value="<?php echo $k; ?>"<?php echo $r['stato'] === $k ? ' checked' : ''; ?> aria-label="<?php echo $h($r['nominativo'] . ': ' . $n); ?>"></td><?php endforeach; ?></tr>
+            <?php endforeach; ?>
+            </tbody></table></div>
+        <button type="submit" name="salva_presenze" value="1" class="btn btn-sm btn-primary fw-bold"><i class="fa fa-save me-1" aria-hidden="true"></i>Salva le presenze</button>
+    </div></form>
+    <?php elseif ($cons_s): ?>
+        <div class="alert alert-light border small">Il consiglio non ha ancora componenti: <a href="<?php echo $base; ?>&amp;tab=sedute&amp;consiglio=<?php echo (int)$cons_s['id']; ?>">inseriscili una volta sola</a> e qui segnerai le presenze.</div>
+    <?php endif; ?>
+
+    <div class="row g-3">
+        <div class="col-lg-8">
+            <div class="card border-0 shadow-sm"><div class="card-body">
+                <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                    <h6 class="fw-bold mb-0">Pratiche in seduta (<?php echo count($pr_sel); ?>)</h6>
+                    <?php if ($con_esito): ?><form method="POST" class="ms-auto m-0"><?php csrf_field(); ?><input type="hidden" name="seduta_id" value="<?php echo (int)$sel['id']; ?>">
+                        <button type="submit" name="applica_esiti" value="1" class="btn btn-sm btn-success fw-bold" data-confirm="Applicare gli esiti? Le approvate diventano accolte e le respinte respinte (gli studenti ricevono l'email); le rinviate tornano senza seduta."><i class="fa fa-check-double me-1" aria-hidden="true"></i>Applica gli esiti alle pratiche (<?php echo $con_esito; ?>)</button></form><?php endif; ?>
+                </div>
+                <?php if (!$pr_sel): ?><p class="small text-muted mb-0">Nessuna: aggiungile dall'elenco a destra<?php echo $solo_ref ? '' : ' o dalla scheda Pratiche'; ?>.</p><?php endif; ?>
+                <?php $mod_corr = null; foreach ($pr_sel as $x):
+                    if ($mod_corr !== $x['modulo_titolo']): $mod_corr = $x['modulo_titolo']; ?><div class="small fw-bold text-secondary text-uppercase mt-3" style="font-size:.7rem;"><?php echo $h($mod_corr); ?></div><?php endif;
+                    $m_x = ['verbale_json' => $x['verbale_json']]; $tipo_d = decisione_modulo($m_x); $campi_x = campi_modulo($x['campi_json']);
+                    $dec = $tipo_d !== '' ? decisioni_pratica($x, $tipo_d, $campi_x) : null;
+                    $es = ESITI_SEDUTA[$x['esito_seduta'] ?? ''] ?? null; ?>
+                    <details class="border rounded mb-2" id="pr<?php echo (int)$x['id']; ?>"<?php echo (int)($_GET['apri'] ?? 0) === (int)$x['id'] ? ' open' : ''; ?>>
+                        <summary class="d-flex flex-wrap gap-2 align-items-center small p-2" style="cursor:pointer;">
+                            <strong><?php echo $h(trim($x['cognome'] . ' ' . $x['nome'])); ?></strong><span class="text-secondary"><?php echo $h($x['matricola']); ?></span>
+                            <span class="ms-auto"><?php echo $es ? '<span class="badge" style="background:' . $es[1] . ';">' . $h($es[0]) . '</span>' : '<span class="badge bg-light text-secondary border">esito da decidere</span>'; ?> <?php echo badge_stato_pratica($x['stato']); ?></span>
+                        </summary>
+                        <div class="p-2 border-top">
+                            <dl class="row small mb-2">
+                                <?php foreach (json_decode((string)$x['risposte_json'], true) ?: [] as $i => $r): if (!empty($r['nascosto'])) continue; ?>
+                                    <dt class="col-sm-4"><?php echo $h($r['etichetta']); ?></dt>
+                                    <dd class="col-sm-8"><?php if (!empty($r['file'])): ?><a href="../allegato_pratica.php?p=<?php echo (int)$x['id']; ?>&amp;r=<?php echo $i; ?>"><i class="fa fa-paperclip me-1" aria-hidden="true"></i><?php echo $h($r['nome_file']); ?></a><?php else: echo html_risposta_pratica($r); endif; ?></dd>
+                                <?php endforeach; ?>
+                            </dl>
+                            <?php if (!$solo_ref): ?><p class="small mb-2"><a href="<?php echo $base; ?>&amp;tab=pratiche&amp;id=<?php echo (int)$x['id']; ?>">Apri la pratica completa</a></p><?php endif; ?>
+                            <form method="POST" class="bg-light rounded p-2 dd-dec" data-tipo="<?php echo $h($tipo_d); ?>"><?php csrf_field(); ?><input type="hidden" name="pratica_id" value="<?php echo (int)$x['id']; ?>">
+                                <div class="d-flex flex-wrap gap-3 small mb-2"><span class="fw-bold">Esito in seduta:</span>
+                                    <?php foreach (ESITI_SEDUTA as $k => [$n]): ?><label class="form-check m-0"><input class="form-check-input" type="radio" name="esito_seduta" value="<?php echo $k; ?>"<?php echo ($x['esito_seduta'] ?? '') === $k ? ' checked' : ''; ?>> <?php echo $h($n); ?></label><?php endforeach; ?>
+                                </div>
+                                <?php if ($tipo_d !== ''): ?>
+                                    <div class="small fw-bold mb-1"><?php echo $tipo_d === 'piano' ? 'Insegnamenti richiesti: in piano o fuori piano' : 'Convalide: insegnamento indicato dallo studente → insegnamento del Dipartimento'; ?><?php echo !empty($dec['_proposte']) && $dec['righe'] ? ' <span class="badge bg-warning text-dark">proposte dalla domanda, da confermare</span>' : ''; ?></div>
+                                    <div class="table-responsive"><table class="table table-sm table-bordered align-middle small mb-1 bg-white" style="min-width:<?php echo $tipo_d === 'piano' ? 560 : 980; ?>px;">
+                                        <thead class="table-light"><tr>
+                                            <?php if ($tipo_d === 'piano'): ?><th>Insegnamento richiesto</th><th style="width:80px;">CFU</th><th style="width:200px;">Decisione</th>
+                                            <?php else: ?><th>Sostenuto dallo studente</th><th style="width:64px;">CFU</th><th style="width:70px;">Voto</th><th style="min-width:220px;">Convalidato con (anagrafe)</th><th style="width:150px;">Convalida</th><th style="width:70px;">CFU ric.</th><th style="width:70px;">Da integrare</th><?php endif; ?>
+                                            <th style="width:28px;"></th></tr></thead>
+                                        <tbody>
+                                        <?php foreach (array_merge($dec['righe'], [[]]) as $r): ?>
+                                            <tr><td><input class="form-control form-control-sm" name="d_richiesto[]" value="<?php echo $h($r['richiesto'] ?? ''); ?>" aria-label="Insegnamento richiesto">
+                                                    <input type="hidden" name="d_ssd[]" value="<?php echo $h($r['ssd'] ?? ''); ?>"><input type="hidden" name="d_data[]" value="<?php echo $h($r['data'] ?? ''); ?>"></td>
+                                                <td><input class="form-control form-control-sm d-cfu" name="d_cfu[]" value="<?php echo $h($r['cfu'] ?? ''); ?>" aria-label="CFU"></td>
+                                                <?php if ($tipo_d === 'piano'): ?>
+                                                    <td><select class="form-select form-select-sm" name="d_esito[]" aria-label="Decisione"><?php foreach (ESITI_PIANO as $k => $n): ?><option value="<?php echo $k; ?>"<?php echo ($r['esito'] ?? 'in_piano') === $k ? ' selected' : ''; ?>><?php echo $h($n); ?></option><?php endforeach; ?></select></td>
+                                                <?php else: ?>
+                                                    <td><input class="form-control form-control-sm" name="d_voto[]" value="<?php echo $h($r['voto'] ?? ''); ?>" aria-label="Voto"></td>
+                                                    <td><input class="form-control form-control-sm d-ins" name="d_ins[]" value="<?php echo $h(!empty($r['ins_id']) && isset($ins_dip[(int)$r['ins_id']]) ? etichetta_insegnamento_scelta($ins_dip[(int)$r['ins_id']]) : ($r['ins'] ?? '')); ?>" list="dlInsDip" placeholder="Scrivi e scegli" aria-label="Insegnamento convalidato">
+                                                        <input type="hidden" class="d-ins-cfu" name="d_ins_cfu[]" value="<?php echo $h($r['ins_cfu'] ?? ''); ?>"></td>
+                                                    <td><select class="form-select form-select-sm d-esito" name="d_esito[]" aria-label="Convalida"><?php foreach (ESITI_CONVALIDA as $k => $n): ?><option value="<?php echo $k; ?>"<?php echo ($r['esito'] ?? 'totale') === $k ? ' selected' : ''; ?>><?php echo $h($n); ?></option><?php endforeach; ?></select></td>
+                                                    <td><input class="form-control form-control-sm d-ric" name="d_cfu_ric[]" value="<?php echo $h($r['cfu_ric'] ?? ''); ?>" aria-label="CFU riconosciuti"></td>
+                                                    <td><input class="form-control form-control-sm d-int" name="d_cfu_int[]" value="<?php echo $h($r['cfu_int'] ?? ''); ?>" aria-label="CFU da integrare"></td>
+                                                <?php endif; ?>
+                                                <td><button type="button" class="btn btn-sm btn-link text-danger p-0 d-togli" aria-label="Togli la riga"><i class="fa fa-times" aria-hidden="true"></i></button></td></tr>
+                                        <?php endforeach; ?>
+                                        </tbody></table></div>
+                                    <button type="button" class="btn btn-sm btn-outline-secondary py-0 mb-2 d-aggiungi"><i class="fa fa-plus me-1" aria-hidden="true"></i>Riga</button>
+                                    <?php if ($tipo_d === 'convalide'): ?><div class="form-text mb-2">Convalida totale: CFU riconosciuti = CFU dell'insegnamento del Dipartimento. Parziale: indica i CFU riconosciuti, quelli da integrare si calcolano. Lasciando vuoti i CFU li completa il portale.</div><?php endif; ?>
+                                <?php endif; ?>
+                                <label class="form-label small fw-bold mb-0" for="del<?php echo (int)$x['id']; ?>">Delibera nel verbale</label>
+                                <textarea class="form-control form-control-sm mb-2" id="del<?php echo (int)$x['id']; ?>" name="delibera" rows="2" maxlength="5000" placeholder="<?php echo $h(verbale_modulo($m_x + ['titolo' => $x['modulo_titolo']])['delibera'] ?: 'Vuoto = testo predefinito del modulo'); ?>"><?php echo $h($x['delibera']); ?></textarea>
+                                <button type="submit" name="salva_decisioni" value="1" class="btn btn-sm btn-primary fw-bold"><i class="fa fa-save me-1" aria-hidden="true"></i>Salva</button>
+                            </form>
+                        </div>
+                    </details>
+                <?php endforeach; ?>
+                <?php if ($pr_sel): ?>
+                <form method="POST" class="mt-2"><?php csrf_field(); ?><input type="hidden" name="torna" value="<?php echo $h($url_sel); ?>"><input type="hidden" name="seduta_id" value="0">
+                    <details class="small"><summary>Togli pratiche dalla seduta</summary>
+                        <?php foreach ($pr_sel as $x): ?><label class="d-block"><input type="checkbox" class="form-check-input" name="ids[]" value="<?php echo (int)$x['id']; ?>"> <?php echo $h(trim($x['cognome'] . ' ' . $x['nome']) . ' – ' . $x['modulo_titolo']); ?></label><?php endforeach; ?>
+                        <button type="submit" name="assegna_seduta" value="1" class="btn btn-sm btn-outline-danger mt-1">Togli le selezionate</button></details>
+                </form>
+                <?php endif; ?>
+            </div></div>
+            <datalist id="dlInsDip"><?php foreach ($ins_dip as $i): ?><option value="<?php echo $h(etichetta_insegnamento_scelta($i)); ?>"><?php endforeach; ?></datalist>
+            <script>
+            (function () {
+                var cfuIns = <?php $mappa = []; foreach ($ins_dip as $i) $mappa[etichetta_insegnamento_scelta($i)] = $i['cfu']; echo json_encode($mappa, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+                function n(v) { v = String(v || '').replace(',', '.'); return v === '' || isNaN(v) ? null : parseFloat(v); }
+                function ricalcola(tr) {
+                    var es = tr.querySelector('.d-esito'); if (!es) return;
+                    var ins = n(tr.querySelector('.d-ins-cfu').value), cfu = n(tr.querySelector('.d-cfu').value), ric = tr.querySelector('.d-ric'), int = tr.querySelector('.d-int');
+                    if (es.value === 'totale') { ric.value = ins !== null ? ins : (cfu !== null ? cfu : ''); int.value = '0'; }
+                    else if (es.value === 'no') { ric.value = '0'; int.value = ''; }
+                    else if (ins !== null && n(ric.value) !== null) int.value = Math.max(0, ins - n(ric.value));
+                }
+                document.querySelectorAll('.dd-dec').forEach(function (f) {
+                    f.addEventListener('change', function (e) {
+                        var tr = e.target.closest('tr'); if (!tr) return;
+                        if (e.target.classList.contains('d-ins')) { var c = cfuIns[e.target.value]; tr.querySelector('.d-ins-cfu').value = c === undefined || c === null ? '' : c; }
+                        if (e.target.classList.contains('d-ins') || e.target.classList.contains('d-esito') || e.target.classList.contains('d-ric')) ricalcola(tr);
+                    });
+                    f.addEventListener('click', function (e) {
+                        var b = e.target.closest('.d-aggiungi');
+                        if (b) { var tb = f.querySelector('tbody'), r = tb.lastElementChild.cloneNode(true); r.querySelectorAll('input').forEach(function (i) { i.value = ''; }); r.querySelectorAll('select').forEach(function (s) { s.selectedIndex = 0; }); tb.appendChild(r); return; }
+                        var t = e.target.closest('.d-togli');
+                        if (t) { var tr = t.closest('tr'); if (tr.parentNode.children.length > 1) tr.remove(); else tr.querySelectorAll('input').forEach(function (i) { i.value = ''; }); }
+                    });
+                });
+                document.querySelectorAll('.dd-tutti').forEach(function (b) { b.addEventListener('click', function () { document.querySelectorAll('.dd-pres[value="' + b.dataset.stato + '"]').forEach(function (r) { r.checked = true; }); }); });
+            })();
+            </script>
+        </div>
+        <div class="col-lg-4">
             <form method="POST" class="card border-0 shadow-sm"><div class="card-body">
                 <?php csrf_field(); ?><input type="hidden" name="torna" value="<?php echo $h($url_sel); ?>"><input type="hidden" name="seduta_id" value="<?php echo (int)$sel['id']; ?>">
                 <h6 class="fw-bold">Pratiche ancora senza seduta (<?php echo count($libere); ?>)</h6>
-                <div style="max-height:420px;overflow:auto;">
-                <?php foreach ($libere as $x): ?>
+                <?php if ($corsi_cons): ?><p class="small text-secondary"><?php echo $solo_ref ? 'Le pratiche dei corsi del consiglio.' : 'Prima quelle dei corsi del consiglio.'; ?></p><?php endif; ?>
+                <div style="max-height:520px;overflow:auto;">
+                <?php foreach ($libere as $x): $del_cons = $corsi_cons && in_array($corso_di($x), $corsi_cons, true); ?>
                     <label class="d-flex gap-2 align-items-center small py-1 border-bottom"><input type="checkbox" class="form-check-input" name="ids[]" value="<?php echo (int)$x['id']; ?>">
-                        <span><?php echo $h(trim($x['cognome'] . ' ' . $x['nome'])); ?><span class="d-block text-secondary"><?php echo $h($x['modulo_titolo']); ?></span></span><span class="ms-auto"><?php echo badge_stato_pratica($x['stato']); ?></span></label>
+                        <span><?php echo $h(trim($x['cognome'] . ' ' . $x['nome'])); ?><span class="d-block text-secondary"><?php echo $h($x['modulo_titolo']); ?><?php echo $del_cons ? ' · <i class="fa fa-star text-warning" aria-hidden="true"></i> corso del consiglio' : ''; ?></span></span><span class="ms-auto"><?php echo badge_stato_pratica($x['stato']); ?></span></label>
                 <?php endforeach; ?>
-                <?php if (!$libere): ?><p class="small text-muted mb-0">Tutte le pratiche aperte sono già in una seduta.</p><?php endif; ?>
+                <?php if (!$libere): ?><p class="small text-muted mb-0">Nessuna pratica da portare in seduta.</p><?php endif; ?>
                 </div>
                 <?php if ($libere): ?><button type="submit" name="assegna_seduta" value="1" class="btn btn-sm btn-dark fw-bold mt-2"><i class="fa fa-plus me-1" aria-hidden="true"></i>Porta in seduta</button><?php endif; ?>
             </div></form>
         </div>
     </div>
     <?php else: ?>
+    <div class="card border-0 shadow-sm mb-3"><div class="card-body">
+        <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+            <h6 class="fw-bold mb-0"><i class="fa fa-landmark me-1 text-primary" aria-hidden="true"></i>Consigli dei corsi di studio</h6>
+            <?php if (!$solo_ref): ?><a href="<?php echo $base; ?>&amp;tab=sedute&amp;consiglio=0" class="btn btn-sm btn-outline-primary py-0 ms-auto"><i class="fa fa-plus me-1" aria-hidden="true"></i>Nuovo consiglio</a><?php endif; ?>
+        </div>
+        <p class="small text-secondary"><?php echo $solo_ref ? 'Sei referente di questi consigli: inserisci i componenti una volta sola, crea le sedute, segna le presenze e decidi sulle pratiche.' : "L'Ufficio didattico sceglie i referenti di ogni consiglio; i referenti inseriscono i componenti e gestiscono le sedute."; ?></p>
+        <div class="list-group list-group-flush small">
+        <?php foreach ($consigli_vis as $k => $c): $nr = count(persone_consiglio($conn, $k, 'referente')); $nc = count(persone_consiglio($conn, $k)); ?>
+            <div class="list-group-item d-flex flex-wrap gap-2 align-items-center px-0">
+                <span class="flex-grow-1" style="min-width:240px;"><strong><?php echo $h($c['nome']); ?></strong><?php echo (int)$c['attivo'] ? '' : ' <span class="badge bg-secondary">non attivo</span>'; ?>
+                    <span class="d-block text-secondary"><?php echo $nr; ?> referenti · <?php echo $nc; ?> componenti</span></span>
+                <a class="btn btn-sm btn-outline-primary py-0" href="<?php echo $base; ?>&amp;tab=sedute&amp;consiglio=<?php echo $k; ?>"><i class="fa fa-users me-1" aria-hidden="true"></i><?php echo $solo_ref ? 'Componenti' : 'Referenti e componenti'; ?></a>
+                <a class="btn btn-sm btn-primary py-0 fw-bold" href="<?php echo $base; ?>&amp;tab=sedute&amp;nuova=1&amp;consiglio_id=<?php echo $k; ?>"><i class="fa fa-plus me-1" aria-hidden="true"></i>Seduta</a>
+            </div>
+        <?php endforeach; ?>
+        <?php if (!$consigli_vis): ?><div class="text-muted">Nessun consiglio.</div><?php endif; ?>
+        </div>
+    </div></div>
     <div class="d-flex flex-wrap gap-2 align-items-center mb-3">
-        <a href="<?php echo $base; ?>&amp;tab=sedute&amp;nuova=1" class="btn btn-primary btn-sm fw-bold"><i class="fa fa-plus-circle me-1" aria-hidden="true"></i>Nuova seduta</a>
-        <span class="small text-secondary">Crea la seduta del Consiglio, porta le pratiche e scarica il verbale in Word già impaginato (logo, o.d.g., presenze, pratiche, firme).</span>
+        <?php if (!$solo_ref): ?><a href="<?php echo $base; ?>&amp;tab=sedute&amp;nuova=1" class="btn btn-primary btn-sm fw-bold"><i class="fa fa-plus-circle me-1" aria-hidden="true"></i>Nuova seduta</a><?php endif; ?>
+        <span class="small text-secondary">Crea la seduta, segna le presenze, porta le pratiche con le decisioni e scarica il verbale in Word già impaginato (logo, o.d.g., presenze, pratiche, convalide, firme).</span>
     </div>
     <div class="card border-0 shadow-sm"><div class="table-responsive"><table class="table table-sm align-middle small mb-0">
         <thead class="table-light"><tr><th>Data</th><th>Organo</th><th>Pratiche</th><th class="text-end">Esporta</th></tr></thead><tbody>
         <?php if (!$sedute): ?><tr><td colspan="4" class="text-center text-muted py-4">Nessuna seduta.</td></tr><?php endif; ?>
         <?php foreach ($sedute as $s): ?>
             <tr><td class="text-nowrap fw-bold"><?php echo $s['data'] ? date('d/m/Y', strtotime($s['data'])) : '—'; ?></td>
-                <td><a class="text-decoration-none" href="<?php echo $base; ?>&amp;tab=sedute&amp;id=<?php echo (int)$s['id']; ?>"><?php echo $h($s['organo']); ?></a></td>
+                <td><a class="text-decoration-none" href="<?php echo $base; ?>&amp;tab=sedute&amp;id=<?php echo (int)$s['id']; ?>"><?php echo $h(mb_strimwidth($s['organo'], 0, 160, '…')); ?></a></td>
                 <td><?php echo (int)$s['n_pratiche']; ?></td>
                 <td class="text-end text-nowrap"><a class="btn btn-sm btn-outline-primary py-0" href="<?php echo $base; ?>&amp;tab=sedute&amp;id=<?php echo (int)$s['id']; ?>&amp;esporta=docx"><i class="fa fa-file-word me-1" aria-hidden="true"></i>Word</a>
                     <a class="btn btn-sm btn-outline-success py-0" href="<?php echo $base; ?>&amp;tab=sedute&amp;id=<?php echo (int)$s['id']; ?>&amp;esporta=xlsx"><i class="fa fa-file-excel me-1" aria-hidden="true"></i>Excel</a></td></tr>
@@ -807,12 +1198,27 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
             ['sezione' => 'Domande lavoro finale', 'stile' => 'elenco', 'colonne' => 'COGNOME, NOME, MATRICOLA, RELATORE, CORRELATORE', 'raggruppa' => 'Corso di studio', 'chiusura' => 'Il Consiglio approva.', 'iter' => ['referente_cdl', 'carriere']]],
         'passaggio' => ['Passaggio di corso, trasferimento o rinuncia/decadenza', 'Carriera', 'Richiesta di passaggio di corso, trasferimento in entrata o iscrizione dopo rinuncia o decadenza, con gli esami da convalidare.',
             [['Tipo di richiesta', 'select', 'passaggio di corso di studio, trasferimento in entrata, iscrizione per rinuncia e decadenza', 1, 0], ['Corso di provenienza', 'text', '', 1, 0], ['Ateneo di provenienza', 'text', '', 1, 0],
-             ['Corso di destinazione', 'corso_studio', '', 1, 0], ['Anno accademico', 'anno_accademico', '', 1, 0], ['Esami sostenuti', 'tabella', 'Insegnamento sostenuto, CFU, Voto, S.S.D., Data', 1, 0],
+             ['Corso di destinazione', 'corso_studio', '', 1, 0], ['Anno accademico', 'anno_accademico', '', 1, 0], ['Esami sostenuti', 'tabella', 'Insegnamento sostenuto:insegnamento, CFU:cfu, Voto:voto, S.S.D.:ssd, Data:data', 1, 0],
              ['Certificato degli esami', 'file', '', 1, 0], ['Quadro delle convalide', 'tabella', 'Insegnamento convalidato, CFU, Voto, Data, S.S.D., Anno insegnamento, Tot CFU insegn., CFU convalidati, CFU da integrare', 0, 1],
              ['Anno di iscrizione deliberato', 'select', 'primo, secondo, terzo', 0, 1]],
             ['sezione' => 'Domande di passaggio, trasferimento e iscrizione', 'stile' => 'scheda',
              'testo' => 'Lo studente {STUDENTE}, matricola {MATRICOLA}, iscritto per l\'a.a. {Anno accademico} al {Corso di provenienza} presso {Ateneo di provenienza}, chiede {Tipo di richiesta} per l\'a.a. {Anno accademico} al {Corso di destinazione}. Valutati i programmi e la loro corrispondenza con gli insegnamenti erogati, il Consiglio approva la richiesta con il seguente quadro di convalide:',
-             'delibera' => 'Il Consiglio delibera l\'iscrizione dello studente al {Anno di iscrizione deliberato} anno del {Corso di destinazione}, con attribuzione del piano di studi secondo il regolamento dell\'anno accademico di riferimento.', 'iter' => ['referente_cdl', 'carriere']]],
+             'delibera' => 'Il Consiglio delibera l\'iscrizione dello studente al {Anno di iscrizione deliberato} anno del {Corso di destinazione}, con attribuzione del piano di studi secondo il regolamento dell\'anno accademico di riferimento.', 'decisione' => 'convalide', 'iter' => ['referente_cdl', 'carriere']]],
+        'convalida' => ['Convalida di esami / riconoscimento crediti', 'Carriera', 'Richiesta di convalida di esami sostenuti in altri corsi o atenei (anche parziale).',
+            [['Corso di studio', 'corso_studio', '', 1, 0], ['Anno accademico', 'anno_accademico', '', 1, 0],
+             ['Dove hai sostenuto gli esami', 'radio', 'in questo Ateneo, in un altro Ateneo', 1, 0],
+             ['Ateneo', 'text', '', 1, 0, ['campo' => 'Dove hai sostenuto gli esami', 'op' => 'uguale', 'valore' => 'in un altro Ateneo']],
+             ['Esami da convalidare', 'tabella', 'Insegnamento sostenuto:insegnamento, CFU:cfu, Voto:voto, S.S.D.:ssd, Data:data', 1, 0, null, 'Con la lente scegli l\'insegnamento dal catalogo di Ateneo (tipo di corso, corso, anno di offerta): CFU e S.S.D. si compilano da soli. Se non lo trovi scrivilo a mano.'],
+             ['Certificato degli esami o programmi', 'file', '', 0, 0],
+             ['Dichiaro che gli esami indicati sono stati regolarmente sostenuti', 'dichiarazione', '', 1, 0, null, 'Dichiarazione resa ai sensi degli artt. 46 e 47 del D.P.R. 445/2000.']],
+            ['sezione' => 'Convalida di esami', 'stile' => 'scheda', 'testo' => 'Lo studente {STUDENTE}, matricola {MATRICOLA}, iscritto al {Corso di studio} per l\'a.a. {Anno accademico}, chiede la convalida degli esami sostenuti {Dove hai sostenuto gli esami} {Ateneo}. Il Consiglio, valutati i programmi, delibera le seguenti convalide:',
+             'delibera' => 'Il Consiglio approva.', 'decisione' => 'convalide', 'iter' => ['referente_cdl', 'carriere']]],
+        'piano' => ['Piano di studi: insegnamenti in piano o fuori piano', 'Piani di studio', 'Richiesta di inserimento nel piano di studi di insegnamenti a scelta, in piano o in soprannumero (fuori piano).',
+            [['Corso di studio', 'corso_studio', '', 1, 0], ['Anno accademico', 'anno_accademico', '', 1, 0], ['Anno di corso', 'select', 'primo, secondo, terzo', 1, 0],
+             ['Insegnamenti richiesti', 'tabella', 'Insegnamento:insegnamento, CFU:cfu, S.S.D.:ssd, Tipo:scelta(in piano|fuori piano)', 1, 0, null, 'Scegli gli insegnamenti dal catalogo di Ateneo indicando corso e anno accademico di offerta.'],
+             ['Motivazione', 'textarea', '', 0, 0]],
+            ['sezione' => 'Piani di studio', 'stile' => 'scheda', 'testo' => 'Lo studente {STUDENTE}, matricola {MATRICOLA}, iscritto al {Anno di corso} anno del {Corso di studio}, chiede l\'inserimento nel piano di studi dei seguenti insegnamenti:',
+             'delibera' => 'Il Consiglio approva.', 'decisione' => 'piano', 'iter' => ['referente_cdl', 'carriere']]],
         'estero' => ['Autorizzazione ad attività all\'estero', 'Mobilità internazionale', 'Richiesta di autorizzazione allo svolgimento di attività formative all\'estero (Erasmus+ e altri programmi).',
             [['Corso di studio', 'corso_studio', '', 1, 0], ['Programma o bando', 'text', '', 1, 0], ['Ente ospitante', 'text', '', 1, 0], ['Paese', 'text', '', 1, 0], ['Dal', 'date', '', 1, 0], ['Al', 'date', '', 1, 0],
              ['Attività', 'select', 'attività di studio, tirocinio, ricerca tesi, tirocinio e ricerca tesi', 1, 0], ['Learning Agreement', 'file', '', 1, 0]],
@@ -860,17 +1266,43 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
 
         <fieldset class="dd-online mt-3 border rounded p-2">
             <legend class="form-label small fw-bold float-none w-auto px-1 mb-1">Campi del modulo online</legend>
-            <p class="small text-secondary mb-2">Nome, cognome, email e matricola si prendono dall'accesso. <strong>Guidati</strong>: «Corso di studio», «Insegnamento» e «Docente» propongono i valori delle anagrafi; «Tabella a righe» chiede più righe con le colonne scritte in «Opzioni» (es. <em>Insegnamento, CFU, Voto, Data</em>). Spunta <strong>ufficio</strong> per i campi che compila solo l'ufficio nell'istruttoria (es. quadro delle convalide). Opzioni separate da virgole.</p>
+            <p class="small text-secondary mb-2">Nome, cognome, email e matricola si prendono dall'accesso. <strong>Dalle anagrafi</strong>: «Corso di studio», «Insegnamento del Dipartimento», «Insegnamento di Ateneo» (lo studente sceglie tipo di corso, corso, anno accademico di offerta e insegnamento, o lo scrive a mano) e «Docente». <strong>Tabella a righe</strong>: con <i class="fa fa-sliders" aria-hidden="true"></i> scegli nome e tipo di ogni colonna (es. Insegnamento dal catalogo, CFU e S.S.D. che si compilano da soli, Voto, Data). Con <i class="fa fa-sliders" aria-hidden="true"></i> imposti anche la <strong>logica</strong>: il campo compare solo se un'altra risposta ha un certo valore, oppure si compila in automatico. Spunta <strong>ufficio</strong> per i campi che compila solo l'ufficio nell'istruttoria. Opzioni separate da virgole.</p>
+            <div class="dd-campo dd-testa small fw-bold text-secondary d-none d-lg-grid"><span>Domanda</span><span>Tipo</span><span>Opzioni / colonne</span><span></span><span></span><span>Aiuto (facoltativo)</span><span></span><span></span></div>
             <div id="ddCampi">
-                <?php foreach ($campi_f ?: [['etichetta' => '', 'tipo' => 'text']] as $c): ?>
+                <?php foreach ($campi_f ?: [['etichetta' => '', 'tipo' => 'text']] as $c):
+                    $cond = is_array($c['cond'] ?? null) ? $c['cond'] : []; $auto = is_array($c['auto'] ?? null) ? $c['auto'] : [];
+                    $opz_txt = is_array($c['opzioni'] ?? null) ? implode(', ', $c['opzioni']) : (string)($c['opzioni'] ?? '');
+                    $cols_f = ($c['tipo'] ?? '') === 'tabella' ? colonne_tabella(array_values(array_filter(array_map('trim', preg_split('/[,;\n]/', $opz_txt)), 'strlen'))) : []; ?>
                 <div class="dd-campo<?php echo !empty($c['ufficio']) ? ' uff' : ''; ?>">
                     <input type="text" class="form-control form-control-sm" name="c_etichetta[]" value="<?php echo $h($c['etichetta'] ?? ''); ?>" placeholder="Domanda" aria-label="Domanda">
-                    <select class="form-select form-select-sm" name="c_tipo[]" aria-label="Tipo"><?php foreach (TIPI_CAMPO_PRATICA as $k => $n): ?><option value="<?php echo $k; ?>"<?php echo ($c['tipo'] ?? '') === $k ? ' selected' : ''; ?>><?php echo $h($n); ?></option><?php endforeach; ?></select>
-                    <input type="text" class="form-control form-control-sm" name="c_opzioni[]" value="<?php echo $h(is_array($c['opzioni'] ?? null) ? implode(', ', $c['opzioni']) : ($c['opzioni'] ?? '')); ?>" placeholder="Opzioni o colonne" aria-label="Opzioni o colonne">
+                    <select class="form-select form-select-sm dd-tipo" name="c_tipo[]" aria-label="Tipo"><?php foreach (GRUPPI_TIPI_CAMPO as $g => $tt): ?><optgroup label="<?php echo $h($g); ?>"><?php foreach ($tt as $k): ?><option value="<?php echo $k; ?>"<?php echo ($c['tipo'] ?? '') === $k ? ' selected' : ''; ?>><?php echo $h(TIPI_CAMPO_PRATICA[$k]); ?></option><?php endforeach; ?></optgroup><?php endforeach; ?></select>
+                    <input type="text" class="form-control form-control-sm dd-opz" name="c_opzioni[]" value="<?php echo $h($cols_f ? testo_colonne_tabella($cols_f) : $opz_txt); ?>" placeholder="Opzioni o colonne" aria-label="Opzioni o colonne">
                     <span><input type="hidden" name="c_obbl[]" value="<?php echo !empty($c['obbligatorio']) ? '1' : '0'; ?>"><label class="form-check small text-nowrap m-0"><input class="form-check-input dd-chk" type="checkbox"<?php echo !empty($c['obbligatorio']) ? ' checked' : ''; ?>> obbligatorio</label></span>
                     <span><input type="hidden" name="c_uff[]" value="<?php echo !empty($c['ufficio']) ? '1' : '0'; ?>"><label class="form-check small text-nowrap m-0"><input class="form-check-input dd-chk dd-uff" type="checkbox"<?php echo !empty($c['ufficio']) ? ' checked' : ''; ?>> ufficio</label></span>
-                    <input type="text" class="form-control form-control-sm" name="c_aiuto[]" value="<?php echo $h($c['aiuto'] ?? ''); ?>" placeholder="Aiuto (facoltativo)" aria-label="Testo di aiuto">
+                    <input type="text" class="form-control form-control-sm" name="c_aiuto[]" value="<?php echo $h($c['aiuto'] ?? ''); ?>" placeholder="Aiuto o testo (facoltativo)" aria-label="Testo di aiuto">
+                    <button type="button" class="btn btn-sm <?php echo $cond || $auto ? 'btn-warning' : 'btn-outline-secondary'; ?> dd-logica-btn" aria-label="Colonne e logica del campo" title="Colonne e logica"><i class="fa fa-sliders" aria-hidden="true"></i></button>
                     <button type="button" class="btn btn-sm btn-outline-danger dd-togli" aria-label="Togli il campo"><i class="fa fa-times" aria-hidden="true"></i></button>
+                    <div class="dd-logica" hidden>
+                        <div class="dd-colonne mb-2"<?php echo ($c['tipo'] ?? '') === 'tabella' ? '' : ' hidden'; ?>>
+                            <div class="small fw-bold mb-1"><i class="fa fa-table-columns me-1" aria-hidden="true"></i>Colonne della tabella</div>
+                            <div class="dd-col-righe"></div>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 dd-col-agg"><i class="fa fa-plus me-1" aria-hidden="true"></i>Colonna</button>
+                            <span class="small text-secondary ms-2">«Insegnamento (catalogo di Ateneo)» compila da solo CFU e S.S.D. nelle colonne di quel tipo.</span>
+                        </div>
+                        <div class="row g-1 align-items-center small mb-1">
+                            <div class="col-md-2 fw-bold"><i class="fa fa-eye me-1" aria-hidden="true"></i>Mostra solo se</div>
+                            <div class="col-md-4"><select class="form-select form-select-sm dd-rif" name="c_cond_campo[]" data-val="<?php echo $h($cond['campo'] ?? ''); ?>" aria-label="Campo della condizione"><option value="">— sempre visibile —</option></select></div>
+                            <div class="col-md-2"><select class="form-select form-select-sm" name="c_cond_op[]" aria-label="Condizione"><?php foreach (OPERATORI_CONDIZIONE as $k => $n): ?><option value="<?php echo $k; ?>"<?php echo ($cond['op'] ?? 'uguale') === $k ? ' selected' : ''; ?>><?php echo $h($n); ?></option><?php endforeach; ?></select></div>
+                            <div class="col-md-4"><input class="form-control form-control-sm" name="c_cond_val[]" value="<?php echo $h($cond['valore'] ?? ''); ?>" placeholder="valore (es. trasferimento in entrata)" aria-label="Valore della condizione"></div>
+                        </div>
+                        <div class="row g-1 align-items-center small">
+                            <div class="col-md-2 fw-bold"><i class="fa fa-wand-magic-sparkles me-1" aria-hidden="true"></i>Compila se</div>
+                            <div class="col-md-3"><select class="form-select form-select-sm dd-rif" name="c_auto_campo[]" data-val="<?php echo $h($auto['campo'] ?? ''); ?>" aria-label="Campo del valore automatico"><option value="">— mai —</option></select></div>
+                            <div class="col-md-2"><select class="form-select form-select-sm" name="c_auto_op[]" aria-label="Condizione"><?php foreach (OPERATORI_CONDIZIONE as $k => $n): ?><option value="<?php echo $k; ?>"<?php echo ($auto['op'] ?? 'uguale') === $k ? ' selected' : ''; ?>><?php echo $h($n); ?></option><?php endforeach; ?></select></div>
+                            <div class="col-md-2"><input class="form-control form-control-sm" name="c_auto_val[]" value="<?php echo $h($auto['valore'] ?? ''); ?>" placeholder="valore" aria-label="Valore"></div>
+                            <div class="col-md-3"><input class="form-control form-control-sm" name="c_auto_imposta[]" value="<?php echo $h($auto['imposta'] ?? ''); ?>" placeholder="allora questo campo vale…" aria-label="Valore automatico"></div>
+                        </div>
+                    </div>
                 </div>
                 <?php endforeach; ?>
             </div>
@@ -897,6 +1329,9 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
                 <div class="col-md-6"><label class="form-label small fw-bold" for="vStile">Impaginazione</label><select class="form-select form-select-sm" id="vStile" name="v_stile">
                     <option value="scheda"<?php echo $v_f['stile'] === 'scheda' ? ' selected' : ''; ?>>Un paragrafo per pratica (con tabelle e delibera)</option>
                     <option value="elenco"<?php echo $v_f['stile'] === 'elenco' ? ' selected' : ''; ?>>Una tabella con una riga per pratica (es. domande di tesi)</option></select></div>
+                <div class="col-md-6"><label class="form-label small fw-bold" for="vDec">Decisioni in seduta</label><select class="form-select form-select-sm" id="vDec" name="v_decisione">
+                    <?php foreach (DECISIONI_SEDUTA as $k => $n): ?><option value="<?php echo $k; ?>"<?php echo $v_f['decisione'] === $k ? ' selected' : ''; ?>><?php echo $h($n); ?></option><?php endforeach; ?></select>
+                    <div class="form-text">Nella seduta, per ogni insegnamento indicato dallo studente: convalida (con l'insegnamento del Dipartimento, totale o parziale) o inserimento in piano / fuori piano. Va nel verbale come tabella.</div></div>
                 <div class="col-12"><label class="form-label small fw-bold" for="vIntro">Testo introduttivo (facoltativo)</label><textarea class="form-control form-control-sm" id="vIntro" name="v_intro" rows="2"><?php echo $h($v_raw['intro'] ?? ''); ?></textarea></div>
                 <div class="col-md-7 dd-v-scheda"><label class="form-label small fw-bold" for="vTesto">Testo per ogni pratica</label><textarea class="form-control form-control-sm" id="vTesto" name="v_testo" rows="4" placeholder="<?php echo $h(verbale_modulo(['titolo' => ''])['testo']); ?>"><?php echo $h($v_raw['testo'] ?? ''); ?></textarea></div>
                 <div class="col-md-5 dd-v-scheda"><label class="form-label small fw-bold" for="vDel">Delibera predefinita per ogni pratica</label><textarea class="form-control form-control-sm" id="vDel" name="v_delibera" rows="4"><?php echo $h($v_raw['delibera'] ?? 'Il Consiglio approva.'); ?></textarea><div class="form-text">Si può cambiare pratica per pratica nell'istruttoria.</div></div>
@@ -913,6 +1348,7 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
     <script>
     (function () {
         var modelli = <?php foreach ($modelli as &$mm_i) $mm_i[4]['iter'] = array_values(array_filter(array_map(fn($c) => ufficio_didattica_id($conn, $c), $mm_i[4]['iter'] ?? []))); unset($mm_i); echo json_encode($modelli, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
+        var TIPI_COL = <?php echo json_encode(TIPI_COLONNA_TABELLA, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP); ?>;
         var tipo = document.getElementById('mTipo'), box = document.getElementById('ddCampi'), stile = document.getElementById('vStile');
         function aggiorna() {
             document.querySelectorAll('.dd-online').forEach(function (x) { x.hidden = tipo.value !== 'online'; });
@@ -920,17 +1356,92 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
             document.querySelectorAll('.dd-v-elenco').forEach(function (x) { x.hidden = stile.value !== 'elenco'; });
         }
         tipo.addEventListener('change', aggiorna); stile.addEventListener('change', aggiorna); aggiorna();
+
+        // ── Colonne delle tabelle: righe nome + tipo, scritte nelle opzioni come "Nome:tipo" ──
+        function leggiColonne(testo) {
+            return testo.split(/[,;\n]/).map(function (x) { return x.trim(); }).filter(Boolean).map(function (x) {
+                var m = x.match(/^(.*?):\s*([a-z_]+)(?:\((.*)\))?\s*$/);
+                if (m && TIPI_COL[m[2]]) return { nome: m[1].trim(), tipo: m[2], scelte: (m[3] || '').split('|').map(function (y) { return y.trim(); }).filter(Boolean).join(' | ') };
+                return { nome: x, tipo: 'testo', scelte: '' };
+            });
+        }
+        function rigaCol(c) {
+            var d = document.createElement('div'); d.className = 'dd-col-riga';
+            var o = Object.keys(TIPI_COL).map(function (k) { return '<option value="' + k + '"' + (k === c.tipo ? ' selected' : '') + '>' + TIPI_COL[k] + '</option>'; }).join('');
+            d.innerHTML = '<input class="form-control form-control-sm dc-nome" placeholder="Nome della colonna" aria-label="Nome della colonna"><select class="form-select form-select-sm dc-tipo" aria-label="Tipo della colonna">' + o + '</select>'
+                + '<input class="form-control form-control-sm dc-scelte" placeholder="Scelte separate da |" aria-label="Scelte della tendina"><button type="button" class="btn btn-sm btn-link text-danger p-0 dc-togli" aria-label="Togli la colonna"><i class="fa fa-times" aria-hidden="true"></i></button>';
+            d.querySelector('.dc-nome').value = c.nome; d.querySelector('.dc-scelte').value = c.scelte || '';
+            d.querySelector('.dc-scelte').hidden = c.tipo !== 'scelta';
+            return d;
+        }
+        function disegnaColonne(r) {
+            var cont = r.querySelector('.dd-col-righe'); cont.innerHTML = '';
+            var cols = leggiColonne(r.querySelector('.dd-opz').value);
+            if (!cols.length) cols = [{ nome: 'Insegnamento', tipo: 'insegnamento' }, { nome: 'CFU', tipo: 'cfu' }, { nome: 'Voto', tipo: 'voto' }];
+            cols.forEach(function (c) { cont.appendChild(rigaCol(c)); });
+            scriviColonne(r);
+        }
+        function scriviColonne(r) {
+            var parti = [];
+            r.querySelectorAll('.dd-col-riga').forEach(function (d) {
+                var n = d.querySelector('.dc-nome').value.replace(/[,;:]/g, ' ').trim(), t = d.querySelector('.dc-tipo').value;
+                d.querySelector('.dc-scelte').hidden = t !== 'scelta';
+                if (!n) return;
+                parti.push(n + (t !== 'testo' ? ':' + t + (t === 'scelta' ? '(' + d.querySelector('.dc-scelte').value.split('|').map(function (x) { return x.replace(/[,;()]/g, ' ').trim(); }).filter(Boolean).join('|') + ')' : '') : ''));
+            });
+            r.querySelector('.dd-opz').value = parti.join(', ');
+        }
+        // ── Logica: tendine con le domande degli altri campi ──
+        function aggiornaRif() {
+            var et = Array.prototype.map.call(box.querySelectorAll('[name="c_etichetta[]"]'), function (i) { return i.value.trim(); });
+            box.querySelectorAll('.dd-campo').forEach(function (r) {
+                var mia = r.querySelector('[name="c_etichetta[]"]').value.trim();
+                r.querySelectorAll('.dd-rif').forEach(function (s) {
+                    var v = s.dataset.val !== undefined ? s.dataset.val : s.value, primo = s.options[0].outerHTML;
+                    s.innerHTML = primo + et.filter(function (x) { return x && x !== mia; }).map(function (x) { var o = document.createElement('option'); o.value = x; o.textContent = x; return o.outerHTML; }).join('');
+                    if (v && !et.includes(v)) { var o = document.createElement('option'); o.value = v; o.textContent = v + ' (domanda non trovata)'; s.appendChild(o); }
+                    s.value = v || ''; s.dataset.val = s.value;
+                });
+                var attiva = r.querySelector('[name="c_cond_campo[]"]').value || r.querySelector('[name="c_auto_campo[]"]').value;
+                var b = r.querySelector('.dd-logica-btn'); b.classList.toggle('btn-warning', !!attiva); b.classList.toggle('btn-outline-secondary', !attiva);
+            });
+        }
+        function preparaRiga(r) {
+            var t = r.querySelector('.dd-tipo');
+            r.querySelector('.dd-colonne').hidden = t.value !== 'tabella';
+            if (t.value === 'tabella') disegnaColonne(r);
+        }
         function nuovaRiga() {
             var n = box.lastElementChild.cloneNode(true);
-            n.querySelectorAll('input[type=text]').forEach(function (i) { i.value = ''; });
+            n.querySelectorAll('input[type=text], .dd-logica input').forEach(function (i) { i.value = ''; });
             n.querySelectorAll('input[type=hidden]').forEach(function (i) { i.value = '0'; });
             n.querySelectorAll('.dd-chk').forEach(function (i) { i.checked = false; });
-            n.classList.remove('uff'); n.querySelector('select').selectedIndex = 0;
-            box.appendChild(n); return n;
+            n.querySelectorAll('.dd-rif').forEach(function (s) { s.dataset.val = ''; });
+            n.querySelector('.dd-col-righe').innerHTML = ''; n.querySelector('.dd-logica').hidden = true;
+            n.classList.remove('uff'); n.querySelector('.dd-tipo').value = 'text';
+            box.appendChild(n); preparaRiga(n); aggiornaRif(); return n;
         }
+        box.querySelectorAll('.dd-campo').forEach(preparaRiga); aggiornaRif();
         document.getElementById('ddAggiungi').addEventListener('click', function () { nuovaRiga().querySelector('input').focus(); });
-        box.addEventListener('click', function (e) { var b = e.target.closest('.dd-togli'); if (!b) return; var r = b.closest('.dd-campo'); if (box.children.length > 1) r.remove(); else r.querySelectorAll('input[type=text]').forEach(function (i) { i.value = ''; }); });
+        box.addEventListener('click', function (e) {
+            var b = e.target.closest('.dd-togli');
+            if (b) { var r = b.closest('.dd-campo'); if (box.children.length > 1) r.remove(); else r.querySelectorAll('input[type=text]').forEach(function (i) { i.value = ''; }); aggiornaRif(); return; }
+            var l = e.target.closest('.dd-logica-btn');
+            if (l) { var p = l.closest('.dd-campo').querySelector('.dd-logica'); p.hidden = !p.hidden; aggiornaRif(); return; }
+            var ca = e.target.closest('.dd-col-agg');
+            if (ca) { var rr = ca.closest('.dd-campo'), nr = rigaCol({ nome: '', tipo: 'testo' }); rr.querySelector('.dd-col-righe').appendChild(nr); nr.querySelector('input').focus(); return; }
+            var ct = e.target.closest('.dc-togli');
+            if (ct) { var r2 = ct.closest('.dd-campo'); ct.closest('.dd-col-riga').remove(); scriviColonne(r2); }
+        });
+        box.addEventListener('input', function (e) {
+            if (e.target.closest('.dd-col-riga')) scriviColonne(e.target.closest('.dd-campo'));
+            if (e.target.classList.contains('dd-opz')) { var r = e.target.closest('.dd-campo'); if (r.querySelector('.dd-tipo').value === 'tabella' && !r.querySelector('.dd-logica').hidden) { var cont = r.querySelector('.dd-col-righe'); cont.innerHTML = ''; leggiColonne(e.target.value).forEach(function (c) { cont.appendChild(rigaCol(c)); }); } }
+        });
+        box.addEventListener('focusout', function (e) { if (e.target.name === 'c_etichetta[]') aggiornaRif(); });
         box.addEventListener('change', function (e) {
+            if (e.target.classList.contains('dd-rif')) { e.target.dataset.val = e.target.value; aggiornaRif(); }
+            if (e.target.closest('.dd-col-riga')) scriviColonne(e.target.closest('.dd-campo'));
+            if (e.target.classList.contains('dd-tipo')) { var r = e.target.closest('.dd-campo'); preparaRiga(r); if (e.target.value === 'tabella') r.querySelector('.dd-logica').hidden = false; }
             if (!e.target.classList.contains('dd-chk')) return;
             e.target.closest('span').querySelector('input[type=hidden]').value = e.target.checked ? '1' : '0';
             if (e.target.classList.contains('dd-uff')) e.target.closest('.dd-campo').classList.toggle('uff', e.target.checked);
@@ -943,15 +1454,22 @@ if (isset($_GET['esporta']) && in_array($_GET['esporta'], ['xlsx', 'docx'], true
                 while (box.children.length > 1) box.lastElementChild.remove();
                 m[3].forEach(function (c, i) {
                     var r = i === 0 ? box.firstElementChild : nuovaRiga();
-                    r.querySelector('[name="c_etichetta[]"]').value = c[0]; r.querySelector('select').value = c[1]; r.querySelector('[name="c_opzioni[]"]').value = c[2];
+                    r.querySelector('[name="c_etichetta[]"]').value = c[0]; r.querySelector('.dd-tipo').value = c[1]; r.querySelector('[name="c_opzioni[]"]').value = c[2];
                     var chk = r.querySelectorAll('.dd-chk'); chk[0].checked = !!c[3]; chk[1].checked = !!c[4];
                     r.querySelector('[name="c_obbl[]"]').value = c[3] ? '1' : '0'; r.querySelector('[name="c_uff[]"]').value = c[4] ? '1' : '0'; r.classList.toggle('uff', !!c[4]);
+                    r.querySelector('[name="c_aiuto[]"]').value = c[6] || '';
+                    var cs = r.querySelector('[name="c_cond_campo[]"]'); cs.dataset.val = c[5] ? c[5].campo : '';
+                    r.querySelector('[name="c_cond_op[]"]').value = c[5] ? c[5].op : 'uguale'; r.querySelector('[name="c_cond_val[]"]').value = c[5] ? c[5].valore : '';
+                    r.querySelector('[name="c_auto_campo[]"]').dataset.val = '';
+                    r.querySelector('.dd-col-righe').innerHTML = ''; preparaRiga(r);
                 });
+                aggiornaRif();
                 var v = m[4];
                 document.getElementById('vSez').value = v.sezione || ''; stile.value = v.stile || 'scheda';
                 document.getElementById('vIntro').value = v.intro || ''; document.getElementById('vTesto').value = v.testo || '';
                 document.getElementById('vDel').value = v.delibera !== undefined ? v.delibera : 'Il Consiglio approva.';
                 document.getElementById('vCol').value = v.colonne || ''; document.getElementById('vRag').value = v.raggruppa || ''; document.getElementById('vChi').value = v.chiusura || '';
+                document.getElementById('vDec').value = v.decisione || '';
                 document.querySelectorAll('.dd-iter').forEach(function (s, i) { s.value = (v.iter || [])[i] || ''; });
                 aggiorna(); document.getElementById('mTit').focus();
             });

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><title>Mappa del portale Didattica DiBEST</title>
+<style>
+@page { size: A4 landscape; margin: 12mm; }
+body { font-family: "DejaVu Sans", Arial, sans-serif; font-size: 9.5pt; color: #1e293b; margin: 0; }
+h1 { font-size: 18pt; margin: 0 0 2px; color: #9b0000; } .sub { color: #64748b; margin-bottom: 10px; }
+.griglia { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.mod { border: 2px solid var(--c); border-radius: 8px; padding: 6px 8px; break-inside: avoid; }
+.mod h2 { font-size: 11.5pt; margin: 0 0 4px; color: var(--c); }
+.mod h3 { font-size: 9.5pt; margin: 6px 0 2px; }
+ul { margin: 0; padding-left: 14px; } li { margin: 1px 0; }
+code { font-size: 8pt; color: #475569; }
+.nuovo { background: #fef3c7; border-radius: 3px; padding: 0 2px; }
+.iter { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin: 4px 0; }
+.iter span { background: #ecfdf5; border: 1px solid #047857; border-radius: 12px; padding: 1px 7px; font-size: 8.5pt; }
+.iter b { color: #047857; }
+.box { border: 1px dashed #94a3b8; border-radius: 8px; padding: 6px 8px; margin-top: 8px; break-inside: avoid; }
+.leg { font-size: 8.5pt; color: #64748b; margin-top: 6px; }
+.pagina2 { break-before: page; }
+</style></head><body>
+<h1>Didattica DiBEST – mappa del portale</h1>
+<div class="sub">dibest2.unical.it/didattica · schema del database v38 · aggiornata il 3 ottobre 2026 · <span class="nuovo">in giallo</span> le novità di questo aggiornamento</div>
+<div class="griglia">
+ <div class="mod" style="--c:#0056B3"><h2>Orientamento</h2>
+  <h3>Aree (eventi e FSL)</h3><ul><li>Eventi e seminari, Welcome Week <code>eventi.php</code></li><li>Progetti FSL con edizioni <code>progetti.php</code></li><li>Iscritti, check-in, scanner, badge</li><li>Sondaggi, statistiche, attestati</li></ul>
+  <h3>Sottomodulo FSL <code>fsl.php</code></h3><ul><li>Riepilogo per anno scolastico</li><li>Convenzioni: registro, validità, docenti</li><li class="nuovo">Convenzione e Allegato A firmati <b>solo PAdES</b> (no .p7m)</li><li>Verifica iscrizioni, valutazioni</li><li>Pubblico: <code>convenzione_online.php</code>, <code>valutazione_fsl.php</code></li></ul>
+ </div>
+ <div class="mod" style="--c:#7c3aed"><h2>Prenotazioni e risorse</h2>
+  <ul><li>Aule, laboratori, sportelli a slot <code>risorse.php</code></li><li>Agenda, approvazioni, CSV <code>prenotazioni_risorse.php</code></li><li>Vista a calendario, chiusure</li><li>Gruppi degli insegnamenti</li><li>Ricevimento dei docenti <code>ricevimento.php</code></li><li>Pubblico: <code>calendario_area.php</code>, <code>.ics</code></li></ul>
+ </div>
+ <div class="mod" style="--c:#047857;grid-column: span 2"><h2>Didattica <code>admin/didattica.php</code></h2>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+  <div><h3>Pratiche degli studenti</h3><ul><li>Filtri: tutte, da smistare, assegnate a me, <span class="nuovo">passate ad altri uffici</span></li><li>Iter per uffici: smistamento → uffici del modulo → esito</li><li class="nuovo">Chi l'ha avuta continua a vederla e integrarla; richiesta d'integrazione a un operatore precedente</li><li class="nuovo">Email solo ai passaggi (operatore + studente), richieste di integrazione, esiti</li><li>Istruttoria, protocollo, note interne, autodichiarazioni, Excel e Word</li></ul>
+   <h3>Moduli e documenti</h3><ul><li>Documenti da scaricare, moduli online con periodo e promemoria</li><li class="nuovo">Tipi: testo, numero, data, ora, URL, codice fiscale, tendina, scelta singola/multipla, casella, dichiarazione, allegato, corso, insegnamento del Dipartimento, <b>insegnamento di Ateneo</b>, docente, a.a., tabella, titoli e testi</li><li class="nuovo">Tabelle con colonne tipizzate (insegnamento dal catalogo → CFU e S.S.D. automatici, voto, data, tendina)</li><li class="nuovo">Logica: «mostra solo se…» e «compila in automatico se…»</li><li class="nuovo">Modelli pronti: tesi, passaggio, <b>convalida esami</b>, <b>piano di studi</b>, estero, rientro</li></ul></div>
+  <div><h3>Sedute e verbali</h3><ul><li class="nuovo"><b>5 consigli</b> dei CdS con <b>referenti</b> (scelti dall'Ufficio) e <b>componenti</b> dall'anagrafe, inseriti una volta</li><li class="nuovo">Presenze per seduta: presente / assente giustificato / ingiustificato</li><li class="nuovo">Per pratica: esito, <b>convalide</b> (totale/parziale con insegnamento del Dipartimento, CFU riconosciuti e da integrare), <b>piano di studi</b> (in piano / fuori piano), delibera</li><li>Verbale Word con logo, o.d.g., <span class="nuovo">presenze per gruppo, quadro delle convalide</span>, firme; Excel</li><li class="nuovo">«Applica gli esiti»: accolte / respinte / rinviate</li></ul>
+   <h3>Ufficio e ricevimento · Statistiche</h3><ul><li>Uffici, operatori e compiti; sportello di ricevimento</li><li>Statistiche per modulo, corso e tempi dell'iter</li></ul>
+   <h3 class="nuovo">Tutorato <code>admin/tutorato.php</code></h3><ul><li class="nuovo">Bandi (decreti, direttore), lettere dei vincitori, Word e PDF</li></ul></div>
+  </div>
+ </div>
+</div>
+<div class="griglia" style="margin-top:8px">
+ <div class="mod" style="--c:#334155"><h2>Gestione del portale</h2><ul><li>Anagrafi: docenti, PTA, insegnamenti, corsi, scuole, strutture</li><li class="nuovo">Catalogo dei corsi di tutto l'Ateneo (aggiornamento settimanale)</li><li>Aree, testata e home, menu</li><li>Utenti e abilitazioni</li><li>Sistema, registri, backup</li></ul></div>
+ <div class="mod" style="--c:#0f766e"><h2>Pagine pubbliche</h2><ul><li>Home a widget, aree, schede evento</li><li>Area personale, <code>pratiche.php</code>, <code>modulistica.php</code>, <code>modulo.php</code></li><li class="nuovo"><code>incarico.php</code> conferma con SPID/CIE</li><li class="nuovo"><code>firma_incarico.php</code> firma PAdES</li><li class="nuovo"><code>cerca_insegnamenti.php</code> catalogo (JSON)</li></ul></div>
+ <div class="mod" style="--c:#b45309;grid-column: span 2"><h2 class="nuovo">Iter della lettera di incarico di tutorato</h2>
+  <div class="iter"><span>Operatore: bando + vincitore + docente</span><b>→</b><span>Email allo studente</span><b>→</b><span>Studente: accesso <b>SPID/CIE</b>, conferma (CF verificato, metadati nel PDF)</span><b>→</b><span>Email al docente</span><b>→</b><span>Docente: firma <b>PAdES</b></span><b>→</b><span>Email al direttore</span><b>→</b><span>Direttore: firma <b>PAdES</b></span><b>→</b><span>Email all'operatore: scarica, protocolla</span><b>→</b><span>Copia allo studente</span></div>
+  <ul><li>Firma: <b>remota Aruba</b> dal portale (utente, PIN, OTP; ArubaSignService, PADES-BES) oppure caricamento del PDF firmato con ArubaSign/Dike/Acrobat</li><li>Controlli: PDF (no .p7m CAdES), stessa lettera + firma aggiunta in modo incrementale, firma integra, codice fiscale del certificato = firmatario atteso</li><li>File in <code>uploads/incarichi/</code> (bloccata al web); storico con data, ora, IP e firmatario</li></ul></div>
+</div>
+<div class="leg">Accessi: amministratori · abilitati al modulo · operatori dell'Ufficio didattico (compiti: pratiche, sedute, ricevimento, bandi) · <span class="nuovo">referenti dei consigli (solo le sedute del proprio consiglio)</span> · studenti e docenti con SSO Unical, SPID o CIE.</div>
+</body></html>

@@ -8,7 +8,7 @@
 // richiesta: quando aggiungi qualcosa qui, cambia anche il nome del marcatore.
 if (!function_exists('assicura_schema')) {
     function assicura_schema($conn) {
-        $marker = RADICE_SITO . '/cache/schema_v37.ok';
+        $marker = RADICE_SITO . '/cache/schema_v38.ok';
         if (is_file($marker)) return;
 
         // 1. Tabelle di servizio (prima create dalle singole pagine a ogni richiesta)
@@ -169,6 +169,68 @@ if (!function_exists('assicura_schema')) {
                 id INT AUTO_INCREMENT PRIMARY KEY, nome VARCHAR(150) NOT NULL DEFAULT '', descrizione VARCHAR(500) DEFAULT '', chiave VARCHAR(30) DEFAULT NULL,
                 smista TINYINT(1) NOT NULL DEFAULT 0, segue_corsi TINYINT(1) NOT NULL DEFAULT 0, ordine INT NOT NULL DEFAULT 0, creato_il DATETIME DEFAULT CURRENT_TIMESTAMP
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            // v38: consigli dei corsi di studio (organi delle sedute) con i referenti scelti dall'Ufficio didattico e i componenti
+            // (docenti dall'anagrafe, inseriti una volta sola); presenze di ogni seduta (P = presente, AG / AI = assente giustificato / ingiustificato)
+            'didattica_consigli' => "CREATE TABLE IF NOT EXISTS didattica_consigli (
+                id INT AUTO_INCREMENT PRIMARY KEY, nome VARCHAR(500) NOT NULL DEFAULT '', corsi TEXT DEFAULT NULL, coordinatore VARCHAR(200) DEFAULT '',
+                segretario VARCHAR(200) DEFAULT '', luogo VARCHAR(255) DEFAULT '', odg TEXT DEFAULT NULL, attivo TINYINT(1) NOT NULL DEFAULT 1, ordine INT NOT NULL DEFAULT 0,
+                creato_il DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            'didattica_consigli_persone' => "CREATE TABLE IF NOT EXISTS didattica_consigli_persone (
+                id INT AUTO_INCREMENT PRIMARY KEY, consiglio_id INT NOT NULL, ruolo VARCHAR(12) NOT NULL DEFAULT 'componente', persona_id VARCHAR(80) DEFAULT NULL,
+                email VARCHAR(150) DEFAULT '', nominativo VARCHAR(200) NOT NULL DEFAULT '', qualifica VARCHAR(150) DEFAULT '', ordine INT NOT NULL DEFAULT 0,
+                creato_il DATETIME DEFAULT CURRENT_TIMESTAMP, INDEX idx_consiglio (consiglio_id, ruolo), INDEX idx_email (email)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            'didattica_sedute_presenze' => "CREATE TABLE IF NOT EXISTS didattica_sedute_presenze (
+                seduta_id INT NOT NULL, componente_id INT NOT NULL, nominativo VARCHAR(200) NOT NULL DEFAULT '', qualifica VARCHAR(150) DEFAULT '',
+                ordine INT NOT NULL DEFAULT 0, stato VARCHAR(2) NOT NULL DEFAULT 'P', PRIMARY KEY (seduta_id, componente_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            // v38: chi ha avuto in carico la pratica (anche dopo il passaggio all'ufficio successivo continua a vederla e a integrarla)
+            'pratiche_operatori' => "CREATE TABLE IF NOT EXISTS pratiche_operatori (
+                pratica_id INT NOT NULL, operatore_id INT NOT NULL, passo TINYINT NOT NULL DEFAULT 0, dal DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (pratica_id, operatore_id), INDEX idx_operatore (operatore_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            // v38: catalogo di Ateneo per i moduli: corsi di studio di tutti i dipartimenti per anno di offerta (API cds) e insegnamenti
+            // di un corso e di un anno di offerta, scaricati la prima volta che servono (API activities) e rinnovati ogni 30 giorni
+            'ateneo_cds' => "CREATE TABLE IF NOT EXISTS ateneo_cds (
+                codice VARCHAR(20) NOT NULL, anno SMALLINT NOT NULL, nome VARCHAR(255) NOT NULL DEFAULT '', tipo VARCHAR(10) DEFAULT '', tipo_descrizione VARCHAR(100) DEFAULT '',
+                dipartimento_cod VARCHAR(20) DEFAULT '', dipartimento VARCHAR(255) DEFAULT '', aggiornato_il DATETIME DEFAULT NULL,
+                PRIMARY KEY (codice, anno), INDEX idx_tipo (tipo, nome)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            'ateneo_insegnamenti' => "CREATE TABLE IF NOT EXISTS ateneo_insegnamenti (
+                id INT NOT NULL PRIMARY KEY, cds_cod VARCHAR(20) NOT NULL DEFAULT '', coorte SMALLINT NOT NULL DEFAULT 0, anno_corso TINYINT DEFAULT NULL,
+                codice VARCHAR(30) DEFAULT '', nome VARCHAR(255) NOT NULL DEFAULT '', cfu DECIMAL(5,1) DEFAULT NULL, ssd_cod VARCHAR(20) DEFAULT '', ssd VARCHAR(150) DEFAULT '',
+                partizione VARCHAR(150) DEFAULT '', semestre VARCHAR(60) DEFAULT '', docente VARCHAR(150) DEFAULT '', INDEX idx_cds (cds_cod, coorte)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            'ateneo_insegnamenti_scaricati' => "CREATE TABLE IF NOT EXISTS ateneo_insegnamenti_scaricati (
+                cds_cod VARCHAR(20) NOT NULL, coorte SMALLINT NOT NULL, n INT NOT NULL DEFAULT 0, scaricato_il DATETIME DEFAULT NULL, PRIMARY KEY (cds_cod, coorte)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            // v38: Tutorato – bandi (decreti, direttore) e lettere di incarico dei vincitori: conferma dello studente con SPID/CIE,
+            // firma digitale PAdES del docente responsabile e del direttore, protocollo; tutorato_eventi = storico della lettera
+            'tutorato_bandi' => "CREATE TABLE IF NOT EXISTS tutorato_bandi (
+                id INT AUTO_INCREMENT PRIMARY KEY, titolo VARCHAR(255) NOT NULL DEFAULT '', anno_accademico VARCHAR(20) DEFAULT '',
+                decreto_bando VARCHAR(100) DEFAULT '', decreto_bando_data DATE DEFAULT NULL, decreto_commissione VARCHAR(100) DEFAULT '', decreto_commissione_data DATE DEFAULT NULL,
+                direttore_persona_id VARCHAR(80) DEFAULT NULL, direttore_nome VARCHAR(200) DEFAULT '', direttore_email VARCHAR(150) DEFAULT '', direttore_cf VARCHAR(16) DEFAULT '',
+                operatore_id INT DEFAULT NULL, luogo VARCHAR(100) DEFAULT 'Rende', creato_da INT DEFAULT NULL, creato_il DATETIME DEFAULT CURRENT_TIMESTAMP, aggiornato_il DATETIME DEFAULT NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            'tutorato_incarichi' => "CREATE TABLE IF NOT EXISTS tutorato_incarichi (
+                id INT AUTO_INCREMENT PRIMARY KEY, bando_id INT NOT NULL, codice VARCHAR(20) NOT NULL, stato VARCHAR(20) NOT NULL DEFAULT 'bozza',
+                genere CHAR(1) NOT NULL DEFAULT 'M', cognome VARCHAR(100) NOT NULL DEFAULT '', nome VARCHAR(100) NOT NULL DEFAULT '', luogo_nascita VARCHAR(150) DEFAULT '',
+                data_nascita DATE DEFAULT NULL, comune_residenza VARCHAR(150) DEFAULT '', indirizzo VARCHAR(255) DEFAULT '', civico VARCHAR(20) DEFAULT '',
+                codice_fiscale VARCHAR(16) NOT NULL DEFAULT '', email VARCHAR(255) NOT NULL DEFAULT '', telefono VARCHAR(40) DEFAULT '',
+                attivita TEXT DEFAULT NULL, ore DECIMAL(6,1) DEFAULT NULL, periodo VARCHAR(255) DEFAULT '', compenso DECIMAL(10,2) DEFAULT NULL,
+                docente_persona_id VARCHAR(80) DEFAULT NULL, docente_nome VARCHAR(100) DEFAULT '', docente_cognome VARCHAR(100) DEFAULT '', docente_email VARCHAR(150) DEFAULT '', docente_cf VARCHAR(16) DEFAULT '',
+                token_studente VARCHAR(40) DEFAULT NULL, token_docente VARCHAR(40) DEFAULT NULL, token_direttore VARCHAR(40) DEFAULT NULL,
+                studente_firma_json TEXT DEFAULT NULL, file_pdf VARCHAR(255) DEFAULT NULL, data_lettera DATE DEFAULT NULL,
+                protocollo VARCHAR(100) NOT NULL DEFAULT '', protocollo_data DATE DEFAULT NULL, nota_studente TEXT DEFAULT NULL,
+                inviata_il DATETIME DEFAULT NULL, confermata_il DATETIME DEFAULT NULL, firmata_docente_il DATETIME DEFAULT NULL, firmata_direttore_il DATETIME DEFAULT NULL,
+                protocollata_il DATETIME DEFAULT NULL, creata_il DATETIME DEFAULT CURRENT_TIMESTAMP, aggiornata_il DATETIME DEFAULT NULL,
+                UNIQUE KEY uq_codice (codice), INDEX idx_bando (bando_id), INDEX idx_stato (stato)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            'tutorato_eventi' => "CREATE TABLE IF NOT EXISTS tutorato_eventi (
+                id INT AUTO_INCREMENT PRIMARY KEY, incarico_id INT NOT NULL, tipo VARCHAR(20) NOT NULL DEFAULT '', testo TEXT DEFAULT NULL, autore VARCHAR(200) DEFAULT '',
+                ip VARCHAR(45) DEFAULT '', creato_il DATETIME DEFAULT CURRENT_TIMESTAMP, INDEX idx_incarico (incarico_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
             'abilitazioni_ambito' => "CREATE TABLE IF NOT EXISTS abilitazioni_ambito (
                 id INT AUTO_INCREMENT PRIMARY KEY, utente_id INT NOT NULL, tipo VARCHAR(20) NOT NULL, pagina_id INT NOT NULL DEFAULT 0,
                 creata_da INT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -227,6 +289,17 @@ if (!function_exists('assicura_schema')) {
                 'protocollo'      => "ADD COLUMN protocollo VARCHAR(100) NOT NULL DEFAULT ''",
                 'protocollo_data' => "ADD COLUMN protocollo_data DATE DEFAULT NULL",
                 'promemoria_il'   => "ADD COLUMN promemoria_il DATETIME DEFAULT NULL",
+                // v38: decisioni prese in seduta (convalide degli esami, inserimento nel piano di studi) ed esito in seduta
+                'decisioni_json'  => "ADD COLUMN decisioni_json MEDIUMTEXT DEFAULT NULL",
+                'esito_seduta'    => "ADD COLUMN esito_seduta VARCHAR(20) NOT NULL DEFAULT ''",
+            ],
+            'didattica_sedute' => [
+                // v38: consiglio (organo) della seduta, con i suoi componenti e i referenti
+                'consiglio_id' => "ADD COLUMN consiglio_id INT DEFAULT NULL, ADD INDEX idx_consiglio (consiglio_id)",
+            ],
+            'insegnamenti' => [
+                // v38: crediti dell'insegnamento (proposti nelle convalide in seduta)
+                'cfu' => "ADD COLUMN cfu DECIMAL(5,1) DEFAULT NULL",
             ],
             'convenzioni_compilate' => [
                 // v37: protocollo della convenzione compilata online, riportato nei documenti
@@ -452,6 +525,16 @@ if (!function_exists('assicura_schema')) {
         }
         $col_prof = $conn->query("SHOW COLUMNS FROM ufficio_didattica LIKE 'profilo'");
         if ($col_prof && $col_prof->num_rows) $conn->query("UPDATE ufficio_didattica o JOIN didattica_uffici u ON u.chiave = o.profilo SET o.ufficio_id = u.id WHERE o.ufficio_id IS NULL");
+
+        // 4d. v38: i consigli dei corsi di studio del Dipartimento (si cambiano dal pannello Didattica → Sedute e verbali → Consigli)
+        if ((int)($conn->query("SELECT COUNT(*) n FROM didattica_consigli")->fetch_assoc()['n'] ?? 1) === 0) {
+            $conn->query("INSERT INTO didattica_consigli (nome, ordine) VALUES
+                ('Consiglio Unificato del Corso di Laurea in Scienze Naturali e Ambientali e del Corso di Laurea Magistrale in Biodiversità e Conservazione dei Sistemi Naturali', 1),
+                ('Consiglio Unificato del Corso di Laurea in Scienze Geologiche e del Corso di Laurea Magistrale in Scienze Geologiche per la Gestione dei Rischi Ambientali e le Georisorse', 2),
+                ('Consiglio del Corso di Laurea in Scienze e Tecnologie per le Attività Motorie e Sportive', 3),
+                ('Consiglio di Coordinamento del Corso di Laurea in Biologia, del Corso di Laurea Magistrale in Biologia, del Corso di Laurea in Scienze e Tecnologie Biologiche e del Corso di Laurea Magistrale in Health Biotechnology', 4),
+                ('Consiglio di Coordinamento del Corso di Laurea Magistrale a Ciclo Unico in Conservazione e Restauro dei Beni Culturali', 5)");
+        }
 
         // 5. v31: il portale diventa "Didattica DiBEST" (solo dove c'è ancora il nome predefinito di prima)
         $conn->query("UPDATE configurazione_portale SET nome_portale = 'Didattica DiBEST' WHERE nome_portale IN ('EventiDiBEST', 'Eventi DiBEST', 'Eventi Dibest')");

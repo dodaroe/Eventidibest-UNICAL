@@ -39,11 +39,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!is_dir($dir_cv)) @mkdir($dir_cv, 0755, true);
         // Documenti firmati: mai raggiungibili dal web, si scaricano solo da convenzione_file.php (pannello)
         if (!is_file($dir_cv . '.htaccess')) @file_put_contents($dir_cv . '.htaccess', "# Convenzioni firmate: si scaricano solo dal pannello (admin/convenzione_file.php)\nRequire all denied\n");
-        $mimes_cv = ['application/pdf', 'application/pkcs7-mime', 'application/x-pkcs7-mime', 'application/pkcs7-signature', 'application/octet-stream'];
+        // Solo PAdES: PDF con la firma dentro il documento (i .p7m CAdES non si accettano)
+        $mimes_cv = ['application/pdf'];
         $file_cv = []; $errori_file = [];
         foreach (['file_convenzione' => 'convenzione', 'file_allegato' => 'Allegato A'] as $campo => $nome_f) {
             if (($_FILES[$campo]['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) continue;
-            $fn = secure_upload($_FILES[$campo], $dir_cv, ['pdf', 'p7m'], $mimes_cv);
+            $pades = is_uploaded_file((string)($_FILES[$campo]['tmp_name'] ?? '')) && firme_pades_pdf((string)file_get_contents($_FILES[$campo]['tmp_name']));
+            $fn = $pades ? secure_upload($_FILES[$campo], $dir_cv, ['pdf'], $mimes_cv) : null;
             if ($fn) $file_cv[$campo] = 'uploads/convenzioni/' . $fn; else $errori_file[] = $nome_f;
         }
         $docenti_cv = [];
@@ -65,7 +67,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         registra_log_audit($conn, $vecchia ? "Convenzione modificata" : "Convenzione registrata", ["Scuola" => $cod_cv, "Valida dal" => $_POST['data_stipula'] ?? '', "Valida fino al" => $_POST['scadenza'] ?? '', "Prenotazioni aggiornate" => $n_cv]);
         flash_set("Convenzione " . ($vecchia ? "aggiornata" : "registrata") . " per " . etichetta_scuola($s_cv) . "."
                   . ($n_cv ? " $n_cv prenotazioni della scuola coperte dalla convenzione (chi era in attesa è stato avvisato per email)." : '')
-                  . ($errori_file ? " File non caricati (servono PDF o .p7m): " . implode(', ', $errori_file) . "." : ''), $errori_file ? 'warning' : 'success');
+                  . ($errori_file ? " File non caricati (serve il PDF firmato digitalmente in PAdES; i .p7m CAdES non sono accettati): " . implode(', ', $errori_file) . "." : ''), $errori_file ? 'warning' : 'success');
     }
     if (isset($_POST['conv_elimina'])) {
         $id_cv = (int)$_POST['conv_elimina'];
@@ -339,13 +341,13 @@ $oggi_cv = date('Y-m-d'); $tra60_cv = date('Y-m-d', strtotime('+60 days'));
         <div class="col-6 col-lg-3"><label class="form-label small fw-bold mb-1" for="cvStip">Valida dal *</label><input type="date" name="data_stipula" id="cvStip" class="form-control form-control-sm" required value="<?php echo $h($cm['data_stipula'] ?? $conv_def_dal); ?>" onchange="var s=document.getElementById('cvScad'); if (this.value && !s.dataset.toccata) { var d=new Date(this.value); d.setFullYear(d.getFullYear()+<?php echo CONV_DURATA_ANNI; ?>); d.setDate(d.getDate()-1); s.value=d.toISOString().slice(0,10); }"></div>
         <div class="col-6 col-lg-3"><label class="form-label small fw-bold mb-1" for="cvScad">Valida fino al *</label><input type="date" name="scadenza" id="cvScad" class="form-control form-control-sm" required value="<?php echo $h($cm['scadenza'] ?? $conv_def_al); ?>" oninput="this.dataset.toccata='1'"></div>
         <div class="col-md-6">
-            <label class="form-label small fw-bold mb-1" for="cvFileC">Convenzione firmata (PDF o .p7m)<?php echo empty($cm['file_convenzione']) ? '' : ' – carica solo per sostituirla'; ?></label>
-            <input type="file" name="file_convenzione" id="cvFileC" class="form-control form-control-sm" accept=".pdf,.p7m">
+            <label class="form-label small fw-bold mb-1" for="cvFileC">Convenzione firmata (PDF PAdES)<?php echo empty($cm['file_convenzione']) ? '' : ' – carica solo per sostituirla'; ?></label>
+            <input type="file" name="file_convenzione" id="cvFileC" class="form-control form-control-sm" accept=".pdf,application/pdf">
             <?php if (!empty($cm['file_convenzione'])): ?><div class="form-text"><a href="convenzione_file.php?id=<?php echo (int)$cm['id']; ?>&f=conv" target="_blank"><i class="fa fa-file-pdf me-1"></i>File attuale</a></div><?php endif; ?>
         </div>
         <div class="col-md-6">
-            <label class="form-label small fw-bold mb-1" for="cvFileA">Allegato A firmato (PDF o .p7m)<?php echo empty($cm['file_allegato']) ? '' : ' – carica solo per sostituirlo'; ?></label>
-            <input type="file" name="file_allegato" id="cvFileA" class="form-control form-control-sm" accept=".pdf,.p7m">
+            <label class="form-label small fw-bold mb-1" for="cvFileA">Allegato A firmato (PDF PAdES)<?php echo empty($cm['file_allegato']) ? '' : ' – carica solo per sostituirlo'; ?></label>
+            <input type="file" name="file_allegato" id="cvFileA" class="form-control form-control-sm" accept=".pdf,application/pdf">
             <?php if (!empty($cm['file_allegato'])): ?><div class="form-text"><a href="convenzione_file.php?id=<?php echo (int)$cm['id']; ?>&f=all" target="_blank"><i class="fa fa-file-pdf me-1"></i>File attuale</a></div><?php endif; ?>
         </div>
         <div class="col-12">

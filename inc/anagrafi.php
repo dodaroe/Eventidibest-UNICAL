@@ -382,6 +382,9 @@ if (!function_exists('sincronizza_anagrafe')) {
             $riepilogo[$cod] = ['ok' => true, 'esito' => $esito];
         }
 
+        // Corsi di studio di tutto l'Ateneo per i moduli della Didattica (catalogo: gli insegnamenti si scaricano quando servono)
+        if ($solo_struttura === null && function_exists('sincronizza_catalogo_cds')) sincronizza_catalogo_cds($conn);
+
         // Insegnamenti dei corsi del proprio dipartimento (la prima struttura dell'anagrafe)
         $prima = (string)($conn->query("SELECT codice FROM anagrafe_strutture ORDER BY aggiunta_il, codice LIMIT 1")->fetch_assoc()['codice'] ?? '');
         if ($prima !== '' && ($solo_struttura === null || $solo_struttura === $prima) && isset($riepilogo[$prima]) && $riepilogo[$prima]['ok']) {
@@ -452,9 +455,9 @@ if (!function_exists('sincronizza_insegnamenti')) {
                 if ($erog === $aa || $erog === $aa + 1) { $r['_coorte'] = $coorte; $r['_erog'] = $erog; $tutti[] = $r; }
             }
         }
-        $up = $conn->prepare("INSERT INTO insegnamenti (id, codice, nome, cds_cod, cds_nome, anno_corso, anno_accademico, coorte, semestre, ssd_cod, ssd, lingua, docente, docente_id, partizione, padre_id, dipartimento_cod, presente, aggiornato_il)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())
-                              ON DUPLICATE KEY UPDATE codice=VALUES(codice), nome=VALUES(nome), cds_cod=VALUES(cds_cod), cds_nome=VALUES(cds_nome), anno_corso=VALUES(anno_corso),
+        $up = $conn->prepare("INSERT INTO insegnamenti (id, codice, nome, cds_cod, cds_nome, anno_corso, anno_accademico, coorte, semestre, ssd_cod, ssd, lingua, docente, docente_id, partizione, padre_id, dipartimento_cod, cfu, presente, aggiornato_il)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())
+                              ON DUPLICATE KEY UPDATE codice=VALUES(codice), cfu=VALUES(cfu), nome=VALUES(nome), cds_cod=VALUES(cds_cod), cds_nome=VALUES(cds_nome), anno_corso=VALUES(anno_corso),
                                 anno_accademico=VALUES(anno_accademico), coorte=VALUES(coorte), semestre=VALUES(semestre), ssd_cod=VALUES(ssd_cod), ssd=VALUES(ssd), lingua=VALUES(lingua), docente=VALUES(docente),
                                 docente_id=VALUES(docente_id), partizione=VALUES(partizione), padre_id=VALUES(padre_id), dipartimento_cod=VALUES(dipartimento_cod), presente=1, aggiornato_il=NOW()");
         $visti = [];
@@ -479,7 +482,8 @@ if (!function_exists('sincronizza_insegnamenti')) {
             $padre = null;
             if ($padri) { $p0 = reset($padri); $padre = (int)(is_array($p0) ? ($p0['StudyActivityID'] ?? $p0['id'] ?? 0) : $p0) ?: null; }
             $dip_r = mb_substr((string)($r['DepartmentCod'] ?? $dip), 0, 20);
-            $up->bind_param("issssiiisssssssis", $id, $cod, $nome, $cds_cod, $cds_nome, $anno_c, $aa_r, $coorte_r, $sem, $ssd_cod, $ssd, $lingua, $docente, $doc_id, $part, $padre, $dip_r);
+            $cfu = function_exists('cfu_attivita_api') ? cfu_attivita_api($r) : null;
+            $up->bind_param("issssiiisssssssisd", $id, $cod, $nome, $cds_cod, $cds_nome, $anno_c, $aa_r, $coorte_r, $sem, $ssd_cod, $ssd, $lingua, $docente, $doc_id, $part, $padre, $dip_r, $cfu);
             $up->execute();
             $visti[] = $id;
         }

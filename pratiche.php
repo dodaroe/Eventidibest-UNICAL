@@ -68,7 +68,7 @@ require_once 'header.php';
             <div class="col-lg-6"><div class="card border-0 shadow-sm"><div class="card-body">
                 <h2 class="h6 fw-bold">La tua richiesta</h2>
                 <dl class="small mb-0">
-                    <?php foreach ($risposte as $i => $r): ?><dt><?php echo $h($r['etichetta']); ?></dt>
+                    <?php foreach ($risposte as $i => $r): if (!empty($r['nascosto'])) continue; ?><dt><?php echo $h($r['etichetta']); ?></dt>
                         <dd><?php if (!empty($r['file'])): ?><a href="allegato_pratica.php?p=<?php echo (int)$p['id']; ?>&amp;r=<?php echo $i; ?>"><i class="fa fa-paperclip me-1" aria-hidden="true"></i><?php echo $h($r['nome_file']); ?></a><?php else: echo html_risposta_pratica($r); endif; ?></dd>
                     <?php endforeach; ?>
                     <?php if (!$risposte): ?><dd class="text-muted">Nessuna risposta.</dd><?php endif; ?>

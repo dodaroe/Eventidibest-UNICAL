@@ -144,7 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['salva_convenzione']))
             inviaNotificaEmail($email, "Convenzione Formazione Scuola Lavoro – documenti da firmare",
                 "<p>Gentile docente,</p><p>la Convenzione e l'Allegato A per <strong>" . $h($s['denominazione']) . "</strong> sono pronti. Da questo link puoi scaricarli o correggerli:</p>"
                 . "<p style='margin:18px 0;'><a href='" . $h($link) . "' style='background:#B30000;color:#fff;padding:10px 18px;text-decoration:none;border-radius:6px;font-weight:bold;'>Apri la convenzione</a></p>"
-                . "<p>Poi il Dirigente Scolastico li <strong>firma digitalmente</strong> e la scuola li invia via PEC a <a href='mailto:" . $h($cfg['pec']) . "'>" . $h($cfg['pec']) . "</a>. Appena riceviamo la convenzione confermiamo le prenotazioni.</p>", $conn);
+                . "<p>Poi il Dirigente Scolastico li <strong>firma digitalmente in PAdES</strong> (PDF firmato, non .p7m) e la scuola li invia via PEC a <a href='mailto:" . $h($cfg['pec']) . "'>" . $h($cfg['pec']) . "</a>. Appena riceviamo la convenzione confermiamo le prenotazioni.</p>", $conn);
         }
         flash_set("Dati salvati: scarica i documenti, falli firmare digitalmente al Dirigente e inviali via PEC.");
         header('Location: convenzione_online.php?t=' . $cc['token'] . '&r=' . time() . '#documenti'); exit;
@@ -166,7 +166,7 @@ require_once 'header.php';
 </style>
 <div class="container my-4" style="max-width: 960px;">
     <h1 class="fw-bold h2 mb-1"><i class="fa fa-file-signature me-2" style="color:#B30000;" aria-hidden="true"></i>Convenzione Formazione Scuola Lavoro</h1>
-    <p class="text-secondary">Compila i dati: prepariamo noi la <strong>Convenzione</strong> e l'<strong>Allegato A</strong> sui modelli del Dipartimento. Poi li scarichi in Word, il Dirigente li firma digitalmente e la scuola li invia via PEC.</p>
+    <p class="text-secondary">Compila i dati: prepariamo noi la <strong>Convenzione</strong> e l'<strong>Allegato A</strong> sui modelli del Dipartimento. Poi li scarichi in Word, il Dirigente li firma digitalmente in PAdES (PDF firmato, non .p7m) e la scuola li invia via PEC.</p>
     <?php echo flash_html(); ?>
     <?php if ($errori): ?><div class="alert alert-danger" role="alert"><strong>Controlla i dati:</strong><ul class="mb-0"><?php foreach ($errori as $e): ?><li><?php echo $h($e); ?></li><?php endforeach; ?></ul></div><?php endif; ?>
 
@@ -179,7 +179,7 @@ require_once 'header.php';
         </div>
         <ol class="mb-2">
             <li>Apri i file e controlla i dati (i campi rimasti in <span style="background:#fef08a;">giallo</span> sono da completare).</li>
-            <li>Il <strong>Dirigente Scolastico</strong> firma i documenti <strong>digitalmente</strong> (PAdES o CAdES).</li>
+            <li>Il <strong>Dirigente Scolastico</strong> firma i documenti <strong>digitalmente in formato PAdES</strong> (PDF firmato; il formato CAdES .p7m non è accettato).</li>
             <li>La scuola li invia dalla propria PEC a <a href="mailto:<?php echo $h($cfg['pec']); ?>?subject=<?php echo rawurlencode('Convenzione Formazione Scuola Lavoro – ' . ($s['denominazione'] ?? '')); ?>" class="fw-bold"><?php echo $h($cfg['pec']); ?></a>.</li>
             <li>Il Dipartimento firma, registra la convenzione e <strong>conferma le prenotazioni</strong>: riceverete un'email.</li>
         </ol>

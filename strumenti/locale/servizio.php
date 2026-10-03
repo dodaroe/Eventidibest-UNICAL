@@ -36,6 +36,8 @@ if ($pagina === '/__accesso') {
             $_SESSION['utente_ruolo_id'] = (int)$u['ruolo_id'];
             $_SESSION['utente_ruoli_secondari'] = $u['ruoli_secondari'] ?? '';
             $_SESSION['accesso_sso_loggato'] = 1;
+            // Accesso di prova come se fosse SPID livello 2 (serve per confermare le lettere di incarico)
+            $_SESSION['auth_meta'] = ['metodo' => 'spid', 'livello' => 2, 'idp' => 'https://idp-di-prova.locale', 'contesto' => 'https://www.spid.gov.it/SpidL2', 'spid_code' => 'PROVA' . (int)$u['id'], 'cf' => $u['codice_fiscale'], 'sessione' => '', 'istante' => date('c'), 'ip' => '127.0.0.1'];
             header('Location: ' . ($vai ?: ((int)$u['ruolo_id'] <= 2 ? '/eventi/admin/' : '/eventi/area_personale.php'))); exit;
         }
     }

@@ -1,11 +1,11 @@
 <?php
 // allegato_pratica.php - Scarica un allegato di una pratica (risposta del modulo ?r=n o messaggio ?e=id).
-// Solo chi ha inviato la pratica e chi gestisce il modulo Didattica; i file stanno in uploads/pratiche/ (bloccata al web).
+// Solo chi ha inviato la pratica, chi gestisce il modulo Didattica e i referenti del consiglio della seduta; i file stanno in uploads/pratiche/ (bloccata al web).
 require_once __DIR__ . '/middleware.php';
 
 $p = pratica($conn, (int)($_GET['p'] ?? 0));
 $nega = function () { while (ob_get_level() > 0) ob_end_clean(); http_response_code(404); exit('File non trovato.'); };
-if (!$p || ((int)$p['utente_id'] !== (int)$_SESSION['utente_id'] && !utente_gestisce_didattica($conn, $user_info))) $nega();
+if (!$p || ((int)$p['utente_id'] !== (int)$_SESSION['utente_id'] && !utente_vede_pratica($conn, $user_info, $p))) $nega();
 
 $file = null; $nome = 'allegato';
 if (isset($_GET['r'])) {

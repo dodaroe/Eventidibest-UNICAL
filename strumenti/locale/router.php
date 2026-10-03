@@ -21,7 +21,7 @@ if (preg_match('#(^|/)\.#', $__r_rel)
     || preg_match('#^(cache|backups|database|strumenti|vendor|modelli_documenti|inc)(/|$)#i', $__r_rel)
     || preg_match('#^(config|functions|middleware)\.php$#i', $__r_rel)
     || preg_match('#\.(save|bak|old|orig|swp|sql|log)(\.\d+)?$#i', $__r_rel)
-    || preg_match('#^uploads/(convenzioni/|.*\.(php\d?|phtml|pl|py|cgi|sh|exe)$)#i', $__r_rel)) {
+    || preg_match('#^uploads/(convenzioni/|incarichi/|pratiche/|.*\.(php\d?|phtml|pl|py|cgi|sh|exe)$)#i', $__r_rel)) {
     http_response_code(403); exit('Accesso negato');
 }
 // Login SSO: in locale si usa l'accesso di prova

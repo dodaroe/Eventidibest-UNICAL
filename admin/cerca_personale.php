@@ -1,6 +1,6 @@
 <?php
 // cerca_personale.php - Ricerca nell'anagrafe del personale di Ateneo (JSON) per referenti e abilitazioni.
-// Solo per chi lavora nel pannello: amministratori e gestori di almeno un'area o un evento.
+// Solo per chi lavora nel pannello: amministratori, gestori di almeno un'area o un evento, Ufficio didattico e referenti dei consigli.
 require_once __DIR__ . '/../config.php';
 require_once __DIR__ . '/../functions.php';
 header('Content-Type: application/json; charset=utf-8');
@@ -15,6 +15,11 @@ if ($uid > 0 && !$ok) {
     while (!$ok && $r && $x = $r->fetch_assoc()) $ok = in_array($uid, ids_gestori_da_campi($x['gestore_utente_id'], $x['gestori_utenti_ids'], $x['permessi_gestori_json']), true);
     $r = $conn->query("SELECT gestori_utenti_ids, permessi_gestori_json FROM eventi WHERE archiviato = 0");
     while (!$ok && $r && $x = $r->fetch_assoc()) $ok = in_array($uid, ids_gestori_da_campi(0, $x['gestori_utenti_ids'], $x['permessi_gestori_json']), true);
+}
+if ($uid > 0 && !$ok) {
+    // Ufficio didattico e referenti dei consigli (referenti, componenti, docenti delle lettere di incarico)
+    $u_dd = $conn->query("SELECT * FROM utenti WHERE id = $uid")->fetch_assoc();
+    $ok = utente_gestisce_didattica($conn, $u_dd) || (bool)consigli_referente($conn, $u_dd);
 }
 if (!$ok) { http_response_code(403); echo json_encode(['errore' => 'Accesso non consentito']); exit; }
 session_write_close();

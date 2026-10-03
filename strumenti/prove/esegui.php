@@ -476,6 +476,214 @@ $fdp = genera_docx_convenzione('allegato', $scuola_cv, $att_cv, null, '456/2026 
 if ($fdp && ($z = new ZipArchive())->open($fdp) === true) { $xp = (string)$z->getFromName('word/document.xml'); $z->close(); } @unlink($fdp);
 prova(str_contains($xp, 'Prot. n. 456/2026 del 02/10/2026'), "protocollo nei documenti della convenzione");
 
+sezione("Moduli: tipi di campo, colonne delle tabelle e logica condizionale");
+$cl = campi_modulo(json_encode([
+    ['etichetta' => 'Dove hai sostenuto gli esami', 'tipo' => 'radio', 'opzioni' => 'in questo Ateneo, in un altro Ateneo', 'obbligatorio' => true],
+    ['etichetta' => 'Ateneo', 'tipo' => 'text', 'obbligatorio' => true, 'cond' => ['campo' => 'dove hai sostenuto gli esami', 'op' => 'uguale', 'valore' => 'in un altro Ateneo']],
+    ['etichetta' => 'Esami', 'tipo' => 'tabella', 'opzioni' => 'Insegnamento:insegnamento, CFU:cfu, Data:data, Esito:scelta(Sì|No)'],
+    ['etichetta' => 'Tipo di iscrizione', 'tipo' => 'select', 'opzioni' => 'tempo pieno, part-time'],
+    ['etichetta' => 'Tasse', 'tipo' => 'text', 'auto' => ['campo' => 'Tipo di iscrizione', 'op' => 'uguale', 'valore' => 'part-time', 'imposta' => 'ridotte']],
+    ['etichetta' => 'Lingue', 'tipo' => 'multicheck', 'opzioni' => 'inglese, francese, tedesco', 'obbligatorio' => true],
+    ['etichetta' => 'Codice fiscale del genitore', 'tipo' => 'codice_fiscale'],
+    ['etichetta' => 'Dichiaro il vero', 'tipo' => 'dichiarazione', 'obbligatorio' => true, 'aiuto' => 'ai sensi del D.P.R. 445/2000'],
+    ['etichetta' => 'Insegnamento a scelta', 'tipo' => 'insegnamento_ateneo'],
+    ['etichetta' => 'Sezione', 'tipo' => 'titolo'],
+    ['etichetta' => 'Condizione rotta', 'tipo' => 'text', 'cond' => ['campo' => 'Inesistente', 'op' => 'uguale', 'valore' => 'x']],
+]));
+prova($cl[1]['cond']['nome'] === 'c1' && $cl[4]['auto']['nome'] === 'c4' && $cl[10]['cond'] === null, "condizioni collegate al campo indicato con la domanda (maiuscole indifferenti, campo inesistente ignorato)");
+prova(array_column($cl[2]['colonne'], 'tipo') === ['insegnamento', 'cfu', 'data', 'scelta'] && $cl[2]['colonne'][3]['scelte'] === ['Sì', 'No'] && $cl[2]['opzioni'] === ['Insegnamento', 'CFU', 'Data', 'Esito'], "colonne della tabella con nome e tipo");
+prova(array_column(colonne_tabella(['Insegnamento convalidato', 'Anno insegnamento', 'Tot CFU insegn.', 'CFU da integrare', 'Voto', 'S.S.D.', 'Relatore']), 'tipo') === ['insegnamento', 'testo', 'cfu', 'testo', 'voto', 'ssd', 'docente'], "tipi delle colonne scritte prima, riconosciuti dal nome");
+prova(testo_colonne_tabella($cl[2]['colonne']) === 'Insegnamento:insegnamento, CFU:cfu, Data:data, Esito:scelta(Sì|No)', "colonne di nuovo in testo per il costruttore");
+$_POST = ['campo_c1' => 'in questo Ateneo', 'campo_c3' => [['Chimica', ''], ['6', ''], ['2026-02-15', ''], ['Forse', '']], 'campo_c4' => 'part-time', 'campo_c5' => 'piene', 'campo_c6' => ['inglese', 'cinese'],
+          'campo_c7' => 'abc', 'campo_c9' => 'Chimica generale – Biologia (a.a. 2024/2025)', 'campo_c9_meta' => json_encode(['id' => 7, 'nome' => 'Chimica generale', 'corso' => 'Biologia', 'aa' => '2024/2025', 'cfu' => 6, 'ssd' => 'CHIM/03'])];
+[$rl, $el] = leggi_risposte_modulo($cl, $conn);
+$_POST = [];
+$per = []; foreach ($rl as $r) $per[$r['etichetta']] = $r;
+prova(!empty($per['Ateneo']['nascosto']) && !in_array('Ateneo: campo obbligatorio', $el, true), "campo nascosto dalla condizione: non obbligatorio, resta vuoto", json_encode($el));
+prova($per['Tasse']['valore'] === 'ridotte', "valore automatico imposto dal server");
+prova($per['Esami']['righe'] === [['Chimica', '6', '15/02/2026', '']], "tabella: date in formato italiano, scelta non prevista scartata", json_encode($per['Esami']['righe']));
+prova($per['Lingue']['valore'] === 'inglese' && in_array('Codice fiscale del genitore: codice fiscale non valido', $el, true) && in_array('Dichiaro il vero: devi accettare la dichiarazione', $el, true), "scelta multipla, codice fiscale e dichiarazione controllati", json_encode($el));
+prova(($per['Insegnamento a scelta']['meta']['cfu'] ?? null) === 6.0 && !isset($per['Sezione']), "insegnamento dal catalogo con corso, a.a., CFU e S.S.D.; i titoli non sono risposte");
+$_POST = ['campo_c1' => 'in un altro Ateneo', 'campo_c6' => ['tedesco'], 'campo_c8' => '1', 'campo_c4' => 'tempo pieno', 'campo_c5' => 'piene'];
+[$rl2, $el2] = leggi_risposte_modulo($cl, $conn);
+$_POST = [];
+prova($el2 === ['Ateneo: campo obbligatorio'] && $rl2[4]['valore'] === 'piene', "campo mostrato dalla condizione: torna obbligatorio; senza condizione il valore è quello scritto", json_encode($el2));
+$hc = html_campo_pratica($cl[1]) . html_campo_pratica($cl[2]) . html_campo_pratica($cl[8]);
+prova(str_contains($hc, 'data-cond="') && str_contains($hc, 'ins-scegli') && str_contains($hc, 'data-col="cfu"') && str_contains($hc, 'type="date"'), "campi con la logica e la scelta dal catalogo nel modulo");
+prova(str_contains(js_tabelle_pratica(), 'assets/js/campi-pratica.js'), "script dei campi nella pagina del modulo");
+
+sezione("Catalogo di Ateneo degli insegnamenti");
+$q("INSERT INTO ateneo_cds (codice, anno, nome, tipo, tipo_descrizione, dipartimento) VALUES ('0723', 2024, 'Biologia', 'L', 'Laurea', 'DiBEST'), ('0723', 2025, 'Biologia', 'L', 'Laurea', 'DiBEST'), ('0999', 2025, 'Ingegneria civile', 'LM', 'Laurea Magistrale', 'DIMES')");
+prova(array_keys(catalogo_tipi_corso($conn)) === ['L', 'LM'], "tipi di corso del catalogo");
+$cc = catalogo_corsi($conn, 'L');
+prova(count($cc) === 1 && $cc[0]['anni'] === [2025, 2024], "corsi del tipo con gli anni di offerta");
+$ni = salva_catalogo_insegnamenti($conn, '0723', 2024, [['StudyActivityID' => 91, 'StudyActivityName' => 'CHIMICA GENERALE', 'StudyActivityCdSCod' => '0723', 'StudyActivityYear' => 1, 'StudyActivityCFU' => '9', 'StudyActivitySSDCod' => 'CHIM/03'],
+                                                         ['StudyActivityID' => 92, 'StudyActivityName' => 'ALTRO CORSO', 'StudyActivityCdSCod' => '0999']]);
+$ci = catalogo_insegnamenti($conn, '0723', 2024, false);
+prova($ni === 1 && count($ci) === 1 && (float)$ci[0]['cfu'] === 9.0 && $ci[0]['ssd_cod'] === 'CHIM/03', "insegnamenti del corso e dell'anno di offerta (solo quel corso)");
+prova(catalogo_insegnamenti($conn, '0723', 2023, false) === [], "anno senza insegnamenti");
+
+sezione("Consigli: referenti, componenti, presenze e decisioni in seduta");
+$cons = consigli_didattica($conn);
+prova(count($cons) === 5 && str_contains(reset($cons)['nome'], 'Scienze Naturali e Ambientali'), "i 5 consigli dei corsi di studio del Dipartimento");
+$c1 = (int)array_key_first($cons);
+$q("INSERT INTO personale_ateneo (id, cognome, nome, email, ruolo, gruppo, docente, attivo) VALUES ('ref.prova', 'Referente', 'Rita', 'rita.ref@unical.it', 'Professore Associato', 'docenti', 1, 1), ('ord.prova', 'Ordinario', 'Otto', 'otto.ord@unical.it', 'Professore Ordinario', 'docenti', 1, 1)");
+$q("INSERT INTO utenti (id, codice_fiscale, nome, cognome, email, ruolo_id) VALUES (98, 'REFRTA80XXXXXXXX', 'Rita', 'Referente', 'rita.ref@unical.it', 5)");
+$u98 = $conn->query("SELECT * FROM utenti WHERE id = 98")->fetch_assoc();
+prova(aggiungi_persona_consiglio($conn, $c1, 'referente', 'ref.prova') === null && consigli_referente($conn, $u98) === [$c1] && !utente_gestisce_didattica($conn, $u98), "referente dall'anagrafe: vede il suo consiglio, non tutta la Didattica");
+prova(aggiungi_persona_consiglio($conn, $c1, 'referente', 'ref.prova') !== null, "referente già presente non duplicato");
+prova(aggiungi_persona_consiglio($conn, $c1, 'componente', 'ord.prova') === null && aggiungi_persona_consiglio($conn, $c1, 'componente', 'ref.prova') === null
+      && aggiungi_persona_consiglio($conn, $c1, 'componente', '', 'Rappresentanti degli studenti', 'Studente Sara') === null, "componenti dall'anagrafe e scritti a mano");
+prova(aggiungi_persona_consiglio($conn, $c1, 'referente', '', '', 'Senza Email') !== null, "referente a mano senza email rifiutato");
+$comp = persone_consiglio($conn, $c1);
+prova(array_column($comp, 'qualifica') === ['Professori ordinari', 'Professori associati', 'Rappresentanti degli studenti'], "gruppi del verbale dal ruolo dell'anagrafe, in ordine", json_encode(array_column($comp, 'qualifica')));
+$q("INSERT INTO didattica_sedute (id, consiglio_id, organo, data, odg) VALUES (61, $c1, '" . $conn->real_escape_string($cons[$c1]['nome']) . "', '2026-11-05', 'Comunicazioni\nPratiche studenti')");
+$s61 = seduta_didattica($conn, 61);
+$pres = presenze_seduta($conn, $s61);
+prova(count($pres) === 3 && !array_filter($pres, fn($r) => $r['_salvata']) && array_unique(array_column($pres, 'stato')) === ['P'], "presenze proposte: tutti i componenti presenti, non ancora registrate");
+$ids_c = array_keys($pres);
+salva_presenze_seduta($conn, $s61, [$ids_c[0] => 'P', $ids_c[1] => 'AG', $ids_c[2] => 'AI']);
+prova(riepilogo_presenze(presenze_seduta($conn, $s61)) === ['P' => 1, 'AG' => 1, 'AI' => 1], "presenze salvate: presente, assente giustificato, ingiustificato");
+// Pratica di convalida in seduta, con l'insegnamento del Dipartimento dall'anagrafe
+$q("INSERT INTO insegnamenti (id, nome, cds_nome, anno_accademico, presente, cfu, ssd_cod) VALUES (501, 'Chimica generale e inorganica', 'Biologia', " . anno_accademico_corrente() . ", 1, 9, 'CHIM/03'), (502, 'Botanica', 'Biologia', " . anno_accademico_corrente() . ", 1, 6, 'BIO/01')");
+$q("INSERT INTO didattica_moduli (id, titolo, categoria, tipo, campi_json, verbale_json, attivo) VALUES (504, 'Convalida esami', 'Carriera', 'online', '" . $conn->real_escape_string(json_encode([['etichetta' => 'Esami da convalidare', 'tipo' => 'tabella', 'opzioni' => 'Insegnamento sostenuto:insegnamento, CFU:cfu, Voto:voto, S.S.D.:ssd']])) . "',
+    '" . $conn->real_escape_string(json_encode(['testo' => '{STUDENTE} chiede la convalida.', 'decisione' => 'convalide'])) . "', 1)");
+$pc = crea_pratica($conn, modulo_didattica($conn, 504), $u73, [['etichetta' => 'Esami da convalidare', 'tipo' => 'tabella', 'valore' => '', 'colonne' => ['Insegnamento sostenuto', 'CFU', 'Voto', 'S.S.D.'], 'righe' => [['Chimica', '8', '27/30', 'CHIM/03'], ['Botanica sistematica', '6', '30/30', 'BIO/02']]]]);
+$conn->query("UPDATE pratiche SET seduta_id = 61 WHERE id = $pc");
+prova(utente_vede_pratica($conn, $u98, pratica($conn, $pc)) && !utente_vede_pratica($conn, $u98, pratica($conn, $pi)), "il referente vede le pratiche delle sedute del suo consiglio, non le altre");
+$pcx = pratiche_per_esportazione($conn, [$pc])[0];
+$dp = decisioni_pratica($pcx, 'convalide', campi_modulo($pcx['campi_json']));
+prova(!empty($dp['_proposte']) && count($dp['righe']) === 2 && $dp['righe'][0]['richiesto'] === 'Chimica' && $dp['righe'][0]['voto'] === '27/30', "convalide proposte dagli esami indicati dallo studente");
+$ins_d = insegnamenti_dipartimento_scelta($conn);
+$et_chim = etichetta_insegnamento_scelta($ins_d[501]);
+$dec = leggi_decisioni_post($conn, 'convalide', ['d_richiesto' => ['Chimica', 'Botanica sistematica', ''], 'd_cfu' => ['8', '6', ''], 'd_voto' => ['27/30', '30/30', ''], 'd_ins' => [$et_chim, 'Botanica', ''],
+                                                 'd_ins_cfu' => ['', '6', ''], 'd_esito' => ['parziale', 'totale', 'totale'], 'd_cfu_ric' => ['8', '', ''], 'd_cfu_int' => ['', '', '']]);
+prova(count($dec['righe']) === 2 && $dec['righe'][0]['ins_id'] === 501 && $dec['righe'][0]['ins_cfu'] === '9' && $dec['righe'][0]['cfu_int'] === '1' && $dec['righe'][1]['cfu_ric'] === '6' && $dec['righe'][1]['cfu_int'] === '0',
+      "convalida parziale (CFU da integrare calcolati) e totale, insegnamento riconosciuto nell'anagrafe", json_encode($dec['righe']));
+salva_decisioni_seduta($conn, $pc, 'approvata', $dec, '');
+$pcx = pratiche_per_esportazione($conn, [$pc])[0];
+$doc61 = genera_verbale_pratiche($conn, $s61, [$pcx]); $x61 = '';
+if ($doc61 && ($z = new ZipArchive())->open($doc61) === true) { $x61 = html_entity_decode(strip_tags(str_replace('</w:p>', "\n", (string)$z->getFromName('word/document.xml')))); $z->close(); } @unlink($doc61);
+prova(str_contains($x61, 'Professori ordinari') && str_contains($x61, 'ASSENTE GIUSTIFICATO') && str_contains($x61, 'ASSENTE INGIUSTIFICATO') && str_contains($x61, 'Presenti: 1'), "verbale: presenze per gruppo con il riepilogo");
+prova(str_contains($x61, 'Quadro delle convalide') && str_contains($x61, 'Convalida parziale') && str_contains($x61, 'Chimica generale e inorganica') && substr_count($x61, 'Botanica sistematica') === 1, "verbale: quadro delle convalide al posto della tabella dello studente");
+$xls61 = genera_excel_pratiche($conn, [$pcx]); $sx61 = '';
+if ($xls61 && ($z = new ZipArchive())->open($xls61) === true) { $sx61 = (string)$z->getFromName('xl/worksheets/sheet1.xml'); $z->close(); } @unlink($xls61);
+prova(str_contains($sx61, 'Esito in seduta') && str_contains($sx61, '>Approvata<') && str_contains($sx61, 'Convalida parziale'), "Excel con esito e decisioni");
+$dpi = leggi_decisioni_post($conn, 'piano', ['d_richiesto' => ['Ecologia', 'Geologia'], 'd_cfu' => ['6', '9'], 'd_esito' => ['fuori_piano', 'inventato']]);
+prova(array_column($dpi['righe'], 'esito') === ['fuori_piano', 'in_piano'] && tabella_decisioni($dpi)[1][0] === ['Ecologia', '6', 'Approvato fuori piano'], "piano di studi: in piano / fuori piano");
+$EMAIL = [];
+prova(applica_esiti_seduta($conn, $s61, 50, 'Referente Rita') === [1, 0, 0] && pratica($conn, $pc)['stato'] === 'accolta' && in_array('nuovo@unical.it', array_column($EMAIL, 'a'), true), "esiti applicati: pratica accolta, email allo studente");
+$conn->query("UPDATE pratiche SET stato = 'in_lavorazione', esito_seduta = 'rinviata' WHERE id = $pc");
+applica_esiti_seduta($conn, $s61, 50);
+prova(pratica($conn, $pc)['seduta_id'] === null && pratica($conn, $pc)['stato'] === 'in_lavorazione', "pratica rinviata: torna senza seduta per la prossima");
+
+sezione("Iter: chi ha avuto la pratica la vede e la integra; email solo ai passaggi");
+$q("INSERT INTO utenti (id, codice_fiscale, nome, cognome, email, ruolo_id) VALUES (99, 'TUTIRE80XXXXXXXX', 'Irene', 'Tutor', 'irene.int@unical.it', 5)");
+$pj = crea_pratica($conn, $m503, $u73, [['etichetta' => 'Corso di studio', 'tipo' => 'corso_studio', 'valore' => 'Corso di laurea in Scienze naturali', 'file' => null, 'nome_file' => null]]);
+$EMAIL = [];
+assegna_pratica($conn, $pj, $op['internazionalizzazione'], 1, '', 50, 'Manager Marta');
+prova(array_column($EMAIL, 'a') === ['irene.int@unical.it', 'nuovo@unical.it'] && str_contains($EMAIL[1]['oggetto'], 'passata a Internazionalizzazione'), "passaggio: email all'operatore e allo studente", json_encode(array_column($EMAIL, 'oggetto')));
+assegna_pratica($conn, $pj, $op['referente_cdl'], 2, '', 50, 'Tutor Irene');
+prova(operatori_pratica($conn, $pj) === [$op['internazionalizzazione'], $op['referente_cdl']], "gli operatori dei passi precedenti restano sulla pratica");
+$EMAIL = [];
+prova(richiedi_a_operatore($conn, $pj, $op['internazionalizzazione'], 'Manca il Learning Agreement firmato', 51, 'Referente Carlo') === null && array_column($EMAIL, 'a') === ['irene.int@unical.it'], "richiesta di integrazione all'operatore precedente");
+prova(!in_array('nuovo@unical.it', array_column($EMAIL, 'a'), true) && (int)$conn->query("SELECT interno FROM pratiche_eventi WHERE pratica_id = $pj AND tipo = 'richiesta'")->fetch_assoc()['interno'] === 1, "la richiesta resta interna");
+$EMAIL = [];
+messaggio_pratica($conn, $pj, 'ufficio', 99, 'Ecco il Learning Agreement', null, false, 'attivita', 'Tutor Irene');
+prova(in_array('carlo.cdl@unical.it', array_column($EMAIL, 'a'), true), "l'operatore precedente integra: avvisato chi ha la pratica in carico");
+$EMAIL = [];
+messaggio_pratica($conn, $pj, 'ufficio', 51, 'Nota tra noi', null, true, 'messaggio', 'Referente Carlo');
+cambia_stato_pratica($conn, $pj, 'in_lavorazione', '', 51);
+prova($EMAIL === [], "note interne e ritorno in lavorazione: nessuna email");
+cambia_stato_pratica($conn, $pj, 'accolta', 'Approvata', 51);
+prova(array_column($EMAIL, 'a') === ['nuovo@unical.it'], "esito: email allo studente");
+
+sezione("Tutorato: lettera di incarico, conferma con SPID/CIE, firme PAdES, protocollo");
+// Firma PAdES di prova: revisione incrementale del PDF con il dizionario /Sig e una firma CMS staccata (come i programmi di firma)
+$crea_cert = function (string $cn, string $cf) {
+    $k = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
+    $c = openssl_csr_sign(openssl_csr_new(['commonName' => $cn, 'serialNumber' => 'TINIT-' . $cf], $k, ['digest_alg' => 'sha256']), null, $k, 30, ['digest_alg' => 'sha256']);
+    openssl_x509_export($c, $pem); openssl_pkey_export($k, $kp);
+    return [$pem, $kp];
+};
+$firma_pades = function (string $pdf, array $cert) {
+    preg_match('/startxref\s+(\d+)\s+%%EOF\s*$/', $pdf, $m); $prev = (int)$m[1];
+    preg_match_all('#/Size (\d+)#', $pdf, $mm); $n = (int)end($mm[1]); preg_match('#/Root (\d+) 0 R#', $pdf, $r);
+    $ph = str_repeat('0', 12000);
+    $obj = "$n 0 obj\n<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /ETSI.CAdES.detached /ByteRange [0 AAAAAAAAAA BBBBBBBBBB CCCCCCCCCC] /Contents <$ph> /M (D:" . date('YmdHis') . ") >>\nendobj\n";
+    $off = strlen($pdf); $nuovo = $pdf . $obj;
+    $xref = strlen($nuovo);
+    $nuovo .= "xref\n0 1\n0000000000 65535 f \n$n 1\n" . sprintf('%010d', $off) . " 00000 n \ntrailer\n<< /Size " . ($n + 1) . " /Root {$r[1]} 0 R /Prev $prev >>\nstartxref\n$xref\n%%EOF\n";
+    $b = strpos($nuovo, '<' . $ph); $c = $b + strlen($ph) + 2; $d = strlen($nuovo) - $c;
+    $nuovo = str_replace(['AAAAAAAAAA', 'BBBBBBBBBB', 'CCCCCCCCCC'], [sprintf('%010d', $b), sprintf('%010d', $c), sprintf('%010d', $d)], $nuovo);
+    $fi = tempnam(sys_get_temp_dir(), 'pi'); $fo = tempnam(sys_get_temp_dir(), 'po');
+    file_put_contents($fi, substr($nuovo, 0, $b) . substr($nuovo, $c));
+    openssl_cms_sign($fi, $fo, $cert[0], $cert[1], [], OPENSSL_CMS_DETACHED | OPENSSL_CMS_BINARY, OPENSSL_ENCODING_DER);
+    $hex = bin2hex((string)file_get_contents($fo)); @unlink($fi); @unlink($fo);
+    return substr_replace($nuovo, str_pad($hex, strlen($ph), '0'), $b + 1, strlen($ph));
+};
+[$bt, $eb] = salva_bando_tutorato($conn, ['titolo' => 'Tutorato I semestre', 'anno_accademico' => '2026/2027', 'decreto_bando' => '123/2026', 'decreto_bando_data' => '2026-09-01', 'decreto_commissione' => '150/2026', 'decreto_commissione_data' => '2026-09-20',
+                                          'direttore_persona_id' => 'ord.prova', 'direttore_cf' => 'RDNTTO60A01D086Z', 'operatore_id' => $op['carriere']], 1);
+prova($bt > 0 && $eb === null && bando_tutorato($conn, $bt)['direttore_email'] === 'otto.ord@unical.it' && bando_tutorato($conn, $bt)['direttore_nome'] === 'Otto Ordinario', "bando con il direttore dall'anagrafe");
+prova(salva_bando_tutorato($conn, ['titolo' => 'Senza decreto'], 1)[1] !== null, "bando senza decreto rifiutato");
+$dati_inc = ['bando_id' => $bt, 'genere' => 'F', 'cognome' => 'Nuovo', 'nome' => 'Arrivata', 'luogo_nascita' => 'Cosenza', 'data_nascita' => '2001-04-04', 'comune_residenza' => 'Rende', 'indirizzo' => 'Via Roma', 'civico' => '3',
+             'codice_fiscale' => 'nvorrv01d44d086x', 'email' => 'nuovo@unical.it', 'attivita' => "Tutorato di Chimica\nprimo anno", 'ore' => '40', 'periodo' => 'dal 01/11/2026 al 28/02/2027', 'compenso' => '1.250,50',
+             'docente_persona_id' => 'ref.prova', 'data_lettera' => '2026-10-10'];
+prova(salva_incarico_tutorato($conn, ['codice_fiscale' => 'XYZ'] + $dati_inc)[1] !== null, "codice fiscale del vincitore controllato");
+[$it, $ei] = salva_incarico_tutorato($conn, $dati_inc);
+$inc = incarico_tutorato($conn, $it);
+prova($it > 0 && $ei === null && $inc['stato'] === 'bozza' && $inc['codice_fiscale'] === 'NVORRV01D44D086X' && (float)$inc['compenso'] === 1250.5 && $inc['docente_email'] === 'rita.ref@unical.it', "lettera in bozza con il docente dall'anagrafe", (string)$ei);
+$dl = dati_lettera_incarico($inc);
+prova($dl['TITOLO'] === 'Dott.ssa' && $dl['NATO'] === 'nata' && $dl['VINCITORE'] === 'vincitrice' && $dl['COMPENSO'] === '€ 1.250,50' && $dl['DECRETO_BANDO'] === '123/2026 del 01/09/2026', "dati della lettera al femminile, decreti e compenso");
+$wd = docx_lettera_incarico($inc); $xw = '';
+if ($wd && ($z = new ZipArchive())->open($wd) === true) { $xw = (string)$z->getFromName('word/document.xml'); $z->close(); } @unlink($wd);
+prova($xw !== '' && (new DOMDocument())->loadXML($xw) && !str_contains($xw, '{{') && str_contains($xw, 'Arrivata Nuovo') && str_contains($xw, '150/2026 del 20/09/2026') && str_contains($xw, '<w:br/>'), "Word precompilato dal modello del Dipartimento, nessun segnaposto rimasto");
+[$pdf0, $spazi] = pdf_lettera_incarico($inc);
+prova(str_starts_with($pdf0, '%PDF-1.7') && str_ends_with(rtrim($pdf0), '%%EOF') && isset($spazi['docente'], $spazi['direttore']) && firme_pades_pdf($pdf0) === [], "PDF della lettera con gli spazi per le firme visibili");
+$EMAIL = [];
+prova(invia_incarico_studente($conn, $it, 'Carla') === null && incarico_tutorato($conn, $it)['stato'] === 'inviata' && array_column($EMAIL, 'a') === ['nuovo@unical.it'] && str_contains($EMAIL[0]['corpo'], 'incarico.php?t='), "lettera inviata: email allo studente con il link");
+prova(salva_incarico_tutorato($conn, ['id' => $it] + $dati_inc)[1] !== null, "dopo l'invio i dati non cambiano");
+$inc = incarico_tutorato($conn, $it);
+prova(incarico_per_token($conn, 'studente', $inc['token_studente'])['id'] == $it && incarico_per_token($conn, 'docente', $inc['token_studente']) === null && incarico_per_token($conn, 'studente', 'x') === null, "link personale dello studente");
+$stud = ['id' => 73, 'codice_fiscale' => 'NVORRV01D44D086X'];
+prova(conferma_incarico_studente($conn, $it, $stud, ['metodo' => 'ateneo']) !== null, "con le credenziali di Ateneo non si conferma (serve SPID o CIE)");
+prova(conferma_incarico_studente($conn, $it, ['id' => 5, 'codice_fiscale' => 'ALTRAPERSONA0000'], ['metodo' => 'spid']) !== null, "un'altra persona non conferma");
+$EMAIL = [];
+prova(segnala_errore_incarico($conn, $it, 'Il civico è 5') === null && in_array('carla.car@unical.it', array_column($EMAIL, 'a'), true), "segnalazione di un errore: email all'operatore del bando");
+$EMAIL = [];
+$meta_spid = ['metodo' => 'spid', 'livello' => 2, 'idp' => 'https://id.lepida.it/idp/shibboleth', 'contesto' => 'https://www.spid.gov.it/SpidL2', 'spid_code' => 'LEPI0001ABCD', 'istante' => date('c'), 'sessione' => '_abc', 'ip' => '10.0.0.1'];
+prova(conferma_incarico_studente($conn, $it, $stud, $meta_spid) === null, "conferma con SPID");
+$inc = incarico_tutorato($conn, $it); $fs = json_decode($inc['studente_firma_json'], true);
+$pdf1 = (string)file_get_contents(pdf_corrente_incarico($inc));
+prova($inc['stato'] === 'confermata' && $fs['spid_code'] === 'LEPI0001ABCD' && $fs['livello'] === 2 && $fs['sha256_pdf'] === hash('sha256', $pdf1) && $fs['impronta'] === impronta_dati_incarico($inc), "dati SPID e impronte registrati con la conferma");
+prova(array_column($EMAIL, 'a') === ['rita.ref@unical.it'] && str_contains($EMAIL[0]['corpo'], 'firma_incarico.php?t='), "email al docente responsabile per la firma");
+prova(conferma_incarico_studente($conn, $it, $stud, $meta_spid) !== null, "una lettera si conferma una volta sola");
+prova(firmatario_incarico($inc, 'docente', $u98) && !firmatario_incarico($inc, 'direttore', $u98) && !firmatario_incarico($inc, 'docente', $u73), "la pagina di firma riconosce il docente dall'accesso");
+// Firme: un .p7m (CAdES), un PDF senza firma e un PDF modificato sono rifiutati; il PAdES del docente passa
+$cert_doc = $crea_cert('Rita Referente', 'RFRRTI80A41D086K');
+prova(registra_firma_incarico($conn, $it, 'docente', "0\x82\x01\x00p7m") !== null && registra_firma_incarico($conn, $it, 'docente', $pdf1) !== null, "CAdES (.p7m) e PDF senza firma rifiutati");
+prova(registra_firma_incarico($conn, $it, 'direttore', $firma_pades($pdf1, $cert_doc)) !== null, "il direttore non firma prima del docente");
+$pdf_doc = $firma_pades($pdf1, $cert_doc);
+$alterato = $pdf_doc; $alterato[strlen($pdf1) + 20] = 'X';
+prova(registra_firma_incarico($conn, $it, 'docente', $firma_pades(str_replace('%%EOF', '%%EOF ', $pdf1), $cert_doc)) !== null && verifica_pdf_firmato($pdf1, $alterato)[0] !== null, "PDF modificato o firma non integra rifiutati");
+prova(analizza_firma_pdf($pdf_doc)['integra'] === true && analizza_firma_pdf($pdf_doc)['cf'] === 'RFRRTI80A41D086K' && analizza_firma_pdf($pdf_doc)['nome'] === 'Rita Referente', "firma PAdES integra, firmatario e codice fiscale dal certificato");
+$EMAIL = [];
+prova(registra_firma_incarico($conn, $it, 'docente', $pdf_doc, 'caricato') === null && incarico_tutorato($conn, $it)['stato'] === 'firmata_docente' && array_column($EMAIL, 'a') === ['otto.ord@unical.it'], "firma del docente: la lettera va al direttore", json_encode(array_column($EMAIL, 'a')));
+$inc = incarico_tutorato($conn, $it);
+prova(registra_firma_incarico($conn, $it, 'direttore', $firma_pades($pdf_doc, $crea_cert('Altra Persona', 'LTRPRS70A01D086Q'))) !== null, "firma di un certificato diverso da quello del direttore rifiutata");
+$pdf_fin = $firma_pades($pdf_doc, $crea_cert('Otto Ordinario', 'RDNTTO60A01D086Z'));
+$EMAIL = [];
+prova(registra_firma_incarico($conn, $it, 'direttore', $pdf_fin, 'firma remota Aruba') === null && incarico_tutorato($conn, $it)['stato'] === 'firmata' && array_column($EMAIL, 'a') === ['carla.car@unical.it'], "firma del direttore: email all'operatore per il protocollo");
+prova(count(firme_pades_pdf((string)file_get_contents(pdf_corrente_incarico(incarico_tutorato($conn, $it))))) === 2, "PDF finale con le due firme PAdES");
+$EMAIL = [];
+prova(protocolla_incarico($conn, $it, '7777/2026', '2026-10-20', true, 'Carla') === null && incarico_tutorato($conn, $it)['stato'] === 'protocollata' && ($EMAIL[0]['a'] ?? '') === 'nuovo@unical.it', "protocollo registrato e copia firmata allo studente");
+$ev_t = array_column($conn->query("SELECT tipo FROM tutorato_eventi WHERE incarico_id = $it ORDER BY id")->fetch_all(MYSQLI_ASSOC), 'tipo');
+prova($ev_t === ['creata', 'inviata', 'errore', 'confermata', 'firma_docente', 'firma_direttore', 'protocollata', 'copia'], "storico completo della lettera", json_encode($ev_t));
+$nd = duplica_incarico($conn, $it);
+prova($nd > 0 && incarico_tutorato($conn, $nd)['stato'] === 'bozza' && annulla_incarico($conn, $nd, 'prova') === null && incarico_tutorato($conn, $nd)['token_studente'] === null, "copia in bozza e annullamento");
+prova(firma_remota_aruba('%PDF', 'u', 'p', '1')[0] === null, "firma remota non configurata: messaggio, nessun invio");
+foreach (glob(RADICE_SITO . '/' . DIR_INCARICHI . 'TU-*.pdf') ?: [] as $f_t) @unlink($f_t);
+
 // ---------------------------------------------------------------------------
 // Prove delle pagine sull'ambiente locale (se acceso)
 $BASE = getenv('BASE_LOCALE') ?: 'http://127.0.0.1:8080';
@@ -566,6 +774,22 @@ if (!function_exists('curl_init') || $http('/eventi/')['codice'] !== 200) {
     $loc->query("DELETE FROM risorse_orari WHERE risorsa_id = $rid_c");
     $loc->query("DELETE FROM risorse WHERE id = $rid_c");
     $loc->query("DELETE FROM pagine_eventi WHERE id = $pid_c");
+    // Didattica: sedute e consigli, costruttore dei moduli, tutorato; catalogo degli insegnamenti e pagine con link personale
+    $c_loc = (int)($loc->query("SELECT MIN(id) n FROM didattica_consigli")->fetch_assoc()['n'] ?? 0);
+    foreach (['didattica.php?tab=sedute', "didattica.php?tab=sedute&consiglio=$c_loc", "didattica.php?tab=sedute&nuova=1&consiglio_id=$c_loc", 'didattica.php?tab=moduli&nuovo=1', 'didattica.php?tab=pratiche&carico=seguite',
+              'tutorato.php', 'tutorato.php?nuovo_bando=1'] as $pag) {
+        $r = $http('/eventi/admin/' . $pag, null, $jar);
+        $err_php = preg_match('/<b>(Fatal error|Parse error|Warning|Deprecated|Notice)<\/b>|Uncaught /', $r['corpo']);
+        prova($r['codice'] === 200 && !$err_php && str_contains($r['corpo'], '</html>'), "pannello Didattica: $pag", "risposta " . $r['codice'] . ($err_php ? ' con errore PHP' : ''));
+    }
+    $r = $http('/eventi/cerca_insegnamenti.php?azione=tipi', null, $jar);
+    prova($r['codice'] === 200 && is_array(json_decode($r['corpo'], true)), "catalogo degli insegnamenti (JSON)");
+    prova($http('/eventi/cerca_insegnamenti.php?azione=tipi')['codice'] === 401, "catalogo degli insegnamenti: serve l'accesso");
+    foreach (['/eventi/incarico.php?t=' . str_repeat('a', 40) => 'Lettera non disponibile', '/eventi/firma_incarico.php?t=' . str_repeat('b', 40) => 'Lettera non disponibile'] as $u => $testo) {
+        $r = $http($u, null, $jar2);
+        prova($r['codice'] === 200 && str_contains($r['corpo'], $testo), "link personale non valido: $u");
+    }
+    prova($http('/eventi/uploads/incarichi/')['codice'] === 403 && $http('/eventi/modelli_documenti/lettera_incarico_tutorato.docx')['codice'] === 403, "lettere di incarico e modello Word non raggiungibili dal web");
     @unlink($jar); @unlink($jar2);
 }
 
